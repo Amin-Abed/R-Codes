@@ -1,0 +1,3439 @@
+rm(list = ls())
+require(optimization)
+require(spectralGP)
+require(MASS)
+require(mvtnorm)
+require(maxLik)
+require(psych)
+require(ngspatial)
+require(pracma)
+GD1       <- 30
+GD2       <- 30
+NPPG        <- 500
+NTG       <- GD1^2
+NAllPPG   <- rep(NPPG , NTG)
+NTP       <- sum(NAllPPG)
+MTP      <- 80
+sigma0    <- 0.8
+lambda0   <- 0.5
+alphaS0   <- -5
+delta0    <- 1.5
+alphaT0   <- 0
+make_coords <- function(NPPG , GD1, xrange, yrange) {
+  xmat <- matrix(0, NPPG , GD1)
+  ymat <- matrix(0, NPPG , GD1)
+  for (i in 1:GD1) {
+    xmat[, i] <- runif(NPPG , xrange[1], xrange[2])
+    ymat[, i] <- runif(NPPG , yrange[1] * (i - 1), yrange[2] * i)
+  }
+  list(x = c(xmat), y = c(ymat))
+}
+
+coords1 <- make_coords(NPPG , GD1, c(0, GD2 * 1), c(GD2, GD2))
+coords2 <- make_coords(NPPG , GD1, c(GD2 * 1, GD2 * 2), c(GD2, GD2))
+coords3 <- make_coords(NPPG , GD1, c(GD2 * 2, GD2 * 3), c(GD2, GD2))
+
+xxx <- c(coords1$x, coords2$x, coords3$x)
+yyy <- c(coords1$y, coords2$y, coords3$y)
+
+data <- data.frame(xxx, yyy)
+Lat  <- data[, 1]
+Long <- data[, 2]
+
+I   <- diag(NTG)
+D   <- -1*adjacency.matrix(GD1, GD1)
+diag(D) <- colSums(adjacency.matrix(GD1, GD1))
+
+NLG1 <- lapply(1:NTG, function(i) rep(i, NAllPPG[i]))
+NLG  <- unlist(NLG1)
+
+NEWNLG <- matrix(0, NTP, NTG)
+for (GridIndic in 1:NTG) {
+  NEWNLG[, GridIndic] <- rep(D[, GridIndic], NAllPPG)
+}
+
+EUC <- as.matrix(dist(cbind(Lat, Long)))
+
+Sigma0 <- solve(sigma0^2 * (lambda0 * D + (1 - lambda0) * I))
+phi    <- mvrnorm(1, rep(0, NTG), Sigma0, tol = 1e-6)
+
+XSUS <- cbind(rnorm(NTG, 0, 1), runif(NTG, 0, 1))
+XINF <- cbind(rnorm(NTP, 0, 1), runif(NTP, 0, 1))
+
+DXINF <- ncol(XINF)
+DXSUS <- ncol(XSUS)
+
+BetaCovInf0 <- rep(1, DXINF)
+BetaCovSus0 <- rep(1, DXSUS)
+
+D1 <- sapply(1:NTG, function(GridIndic) sample(NAllPPG[GridIndic], 1, replace = FALSE))
+
+EXPT1 <- lapply(1:NTG, function(i) {
+  v <- rep(0, NAllPPG[i])
+  v[D1[i]] <- 1
+  v
+})
+
+EXPT <- unlist(EXPT1)
+
+INFPR  <- rep(3, NTP)
+INCPR  <- rep(3,  NTP)
+INCPR1 <- INCPR[1]  
+
+INFECT <- ifelse(EXPT > 0, EXPT + INCPR1, EXPT)
+
+for (t in 1:MTP) {
+  for (i in 1:NTP) {
+    for (GridIndic in 1:NTG) {
+      if (NLG[i] == GridIndic && INFECT[i] == 0) {
+        
+        InfForc <- rep(0, NTP)
+        for (j in 1:NTP) {
+          if (NEWNLG[j, GridIndic] != 0 &&
+              INFECT[j] <= t &&
+              (INFECT[j] + INFPR[j]) >= t &&
+              INFECT[j] != 0) {
+            InfForc[j] <- exp(alphaT0 + XINF[j, ] %*% BetaCovInf0) *
+              exp(EUC[i, j] * (-delta0))
+          }
+        }
+        
+        InfForc <- replace(InfForc, is.infinite(InfForc), 0)
+        SInfForc <- sum(InfForc)
+        
+        if ((1 - exp(-exp(alphaS0 + XSUS[GridIndic, ] %*% BetaCovSus0 + phi[GridIndic]) * SInfForc))>(runif(1))) {
+          INFECT[i] <- t + 1
+        }
+      }
+    }
+  }
+}
+
+EXPT <- INFECT - INCPR1
+
+
+
+FUNC1=function(NLG,EUC,alphaS,delta,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT){
+  
+  FUNC11=rep(0,NTP)
+  for(j in 1:NTP){
+    if (NEWNLG[j,GridIndic]!=0){
+      if(INFECT[j]<=t & (INFECT[j]+INFPR[j])>=t & INFECT[j]!=0){
+        FUNC11[j]=1*exp(alphaT+XINF[j,]%*%BetaCovInf)*EUC[i,j]^(-delta)
+      }
+    }
+  }
+  
+  FUNC111=exp(alphaS+XSUS[GridIndic,]%*%BetaCovSus)*sum(replace(FUNC11,is.infinite(FUNC11),0))
+  
+  return(FUNC111)
+}
+
+
+FUNC2=function(NLG,EUC,alphaS,delta,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT){
+  
+  FUNC22=array(0,c(DXINF,1,NTP))
+  for(j in 1:NTP){
+    if (NEWNLG[j,GridIndic]!=0){
+      if(INFECT[j]<=t & (INFECT[j]+INFPR[j])>=t & INFECT[j]!=0){
+        FUNC22[,,j]=1*XINF[j,]*as.numeric(exp(alphaT+XINF[j,]%*%BetaCovInf))*EUC[i,j]^(-delta)
+      }
+    }
+  }
+  FUNC22[!is.finite(FUNC22)]=NA
+  
+  return(apply(FUNC22,c(1,2),sum,na.rm=T)*as.numeric(exp(alphaS+XSUS[GridIndic,]%*%BetaCovSus)))
+}
+
+FUNC3=function(NLG,EUC,alphaS,delta,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT){
+  
+  FUNC33=array(0,c(DXINF,DXINF,NTP))
+  for(j in 1:NTP){
+    if (NEWNLG[j,GridIndic]!=0){
+      if(INFECT[j]<=t & (INFECT[j]+INFPR[j])>=t & INFECT[j]!=0){
+        FUNC33[,,j]=1*XINF[j,]%*%t(XINF[j,])*as.numeric(exp(alphaT+XINF[j,]%*%BetaCovInf))*EUC[i,j]^(-delta)
+      }
+    }
+  }
+  FUNC33[!is.finite(FUNC33)]=NA
+  
+  return(apply(FUNC33,c(1,2),sum,na.rm=T)*as.numeric(exp(alphaS+XSUS[GridIndic,]%*%BetaCovSus)))
+}
+
+
+FUNC4=function(NLG,EUC,alphaS,delta,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT){
+  
+  FUNC44=rep(0,NTP)
+  for(j in 1:NTP){
+    if (NEWNLG[j,GridIndic]!=0){
+      if(INFECT[j]<=t & (INFECT[j]+INFPR[j])>=t & INFECT[j]!=0){
+        FUNC44[j]=1*exp(alphaT+XINF[j,]%*%BetaCovInf)*EUC[i,j]^(-delta)*(log(EUC[i,j]))
+      }
+    }
+  }
+
+  
+  FUNC444=exp(alphaS+XSUS[GridIndic,]%*%BetaCovSus)*sum(replace(FUNC44,is.infinite(FUNC44),0))
+  
+  return(FUNC444)
+}
+
+
+FUNC5=function(NLG,EUC,alphaS,delta,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT){
+  
+  FUNC55=rep(0,NTP)
+  for(j in 1:NTP){
+    if (NEWNLG[j,GridIndic]!=0){
+      if(INFECT[j]<=t & (INFECT[j]+INFPR[j])>=t & INFECT[j]!=0){
+        FUNC55[j]=1*exp(alphaT+XINF[j,]%*%BetaCovInf)*EUC[i,j]^(-delta)*(log(EUC[i,j]))^2
+      }
+    }
+  }
+  
+  FUNC555=exp(alphaS+XSUS[GridIndic,]%*%BetaCovSus)*sum(replace(FUNC55,is.infinite(FUNC55),0))
+  
+  return(FUNC555)
+}
+
+FUNC6=function(phi,alphaS,delta,lambda1,sigma1,BetaCovInf,BetaCovSus,alphaT){
+  
+  FUNC7=array(0,c(NTP,MTP,NTG))
+  for(i in 1:NTP){
+    for(t in 1:MTP){
+      for(GridIndic in 1:NTG){
+        if(NLG[i]==GridIndic){
+          if(EXPT[i]>t|EXPT[i]==0){
+            
+            
+            dx1=rep(0,NTP)
+            for(j in 1:NTP){
+              if (NEWNLG[j,GridIndic]!=0){
+                if(INFECT[j]<=t & (INFECT[j]+INFPR[j])>=t & INFECT[j]!=0){
+                  dx1[j]=1*exp(alphaT+XINF[j,]%*%BetaCovInf)*EUC[i,j]^(-delta)
+                }
+              }
+            }
+
+            
+            PR1=1-exp(-1*exp(alphaS+XSUS[GridIndic,]%*%BetaCovSus+phi[GridIndic])*sum(replace(dx1,is.infinite(dx1),0)))
+            
+            
+            FUNC7[i,t,GridIndic]=(1-PR1)
+            
+            
+          }
+          
+          if(EXPT[i]<=t & (EXPT[i]+INCPR[i])>t & EXPT[i]!=0){
+            
+            dx4=rep(0,NTP)
+            for(j in 1:NTP){
+              if (NEWNLG[j,GridIndic]!=0){
+                if(INFECT[j]<=t & (INFECT[j]+INFPR[j])>=t & INFECT[j]!=0){
+                  dx4[j]=1*exp(alphaT+XINF[j,]%*%BetaCovInf)*EUC[i,j]^(-delta)
+                }
+              }
+            }
+            
+            PR2=1-exp(-1*exp(alphaS+XSUS[GridIndic,]%*%BetaCovSus+phi[GridIndic])*sum(replace(dx4,is.infinite(dx4),0)))
+            
+            
+            FUNC7[i,t,GridIndic]=(PR2)
+            
+          }
+        }
+      }
+    }
+  }
+  
+  FUNC8=c()
+  FUNC9=list()
+  FUNC10=c()
+  for(GridIndic in 1:NTG){
+    for(i in 1:NTP){
+      FUNC8[i]=round(prod(FUNC7[i,,GridIndic][FUNC7[i,,GridIndic]>0]),10)
+    }
+    FUNC9[[GridIndic]]=which(FUNC8!=1)
+    FUNC10[GridIndic]=prod(FUNC8[FUNC9[[GridIndic]]][FUNC8[FUNC9[[GridIndic]]]>0])
+  }
+  return(FUNC10)
+}
+
+
+
+alphaS=alphaS0
+delta=delta0
+sigma1=sigma0
+lambda1=lambda0
+BetaCovInf=BetaCovInf0
+BetaCovSus=BetaCovSus0
+alphaT=alphaT0
+
+
+ ESTFN=function(NLG,EUC,alphaS,delta,lambda1,sigma1,BetaCovInf,BetaCovSus,alphaT){
+  
+  
+  PST=matrix(0,50+1,NTG)
+  Sigma1=solve(sigma1^2*(lambda1*D+(1-lambda1)*I))
+  phi0=mvrnorm(1, rep(0,NTG), Sigma1, tol = 1e-6)
+  
+  PST[1,]=phi0
+  FN1=c()
+  FN2=c()
+  for(L in 2:50){
+    
+    phi=mvrnorm(1, rep(0,NTG), Sigma1, tol = 1e-6)
+    
+    FN3=FUNC6(phi,alphaS,delta,lambda1,sigma1,BetaCovInf,BetaCovSus,alphaT)
+    FN4=FUNC6(PST[L-1,],alphaS,delta,lambda1,sigma1,BetaCovInf,BetaCovSus,alphaT)
+    FN1[L]=runif(1,0,1)
+    
+    FN2[L]=min(1,prod(FN3/FN4))
+    if(FN1[L]<FN2[L]){
+      PST[L,]=phi
+    }
+    
+    if(FN1[L]>=FN2[L]){
+      PST[L,]=PST[L-1,]
+    }
+  }
+  
+  date()
+  
+  
+  AV1=function(PST,GridIndic){
+    d1=c()
+    for(L in 1:50){
+      d1[L]=exp(PST[L,GridIndic])
+    }
+    return(mean(d1))
+  }
+  
+  
+  AV2=function(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L){
+    
+    
+    dx1=rep(0,NTP)
+    for(j in 1:NTP){
+      if (NEWNLG[j,GridIndic]!=0){
+        if(INFECT[j]<=t & (INFECT[j]+INFPR[j])>=t & INFECT[j]!=0){
+          dx1[j]=1*exp(alphaT+XINF[j,]%*%BetaCovInf)*EUC[i,j]^(-delta)
+        }
+      }
+    }
+    
+    PR1=1-exp(-1*exp(alphaS+XSUS[GridIndic,]%*%BetaCovSus+PST[L,GridIndic])*sum(replace(dx1,is.infinite(dx1),0)))
+    
+    if(PR1==0){AV2s=0}
+    
+    if(PR1!=0){
+      AV2s=(1-PR1)/PR1*exp(PST[L,GridIndic])
+    }
+    
+    return(AV2s)
+  }
+  
+  
+  
+  
+  AV3=function(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L){
+    
+    
+    
+    dx1=rep(0,NTP)
+    for(j in 1:NTP){
+      if (NEWNLG[j,GridIndic]!=0){
+        if(INFECT[j]<=t & (INFECT[j]+INFPR[j])>=t & INFECT[j]!=0){
+          dx1[j]=1*exp(alphaT+XINF[j,]%*%BetaCovInf)*EUC[i,j]^(-delta)
+        }
+      }
+    }
+    
+    PR1=1-exp(-1*exp(alphaS+XSUS[GridIndic,]%*%BetaCovSus+PST[L,GridIndic])*sum(replace(dx1,is.infinite(dx1),0)))
+    
+    if(PR1==0){AV3s=0}
+    
+    if(PR1!=0){
+      AV3s=(1-PR1)/PR1^2*exp(2*PST[L,GridIndic])
+    }
+    
+    return(AV3s)
+  }
+  
+  
+  Q1=rep(0,MTP)
+  for(t in 1:MTP){
+    Q2=rep(0,NTP)
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if (NLG[i]==GridIndic){
+          if(EXPT[i]>t|EXPT[i]==0){
+            Q2[i]=-1*as.numeric(FUNC1(NLG,EUC,alphaS,delta,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT)*AV1(PST,GridIndic))
+          }
+        }
+      }
+    }
+    Q1[t]=sum(Q2)
+  }
+  
+  
+  
+  Q3=rep(0,MTP)
+  for(t in 1:MTP){
+    Q4=rep(0,NTP)
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if(NLG[i]==GridIndic){
+          if(EXPT[i]<=t & (EXPT[i]+INCPR[i])>t & EXPT[i]!=0){
+            
+            Q5=c()
+            for(L in 1:50){
+              Q5[L]=AV2(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L)
+            }
+            
+            Q4[i]=1*as.numeric(FUNC1(NLG,EUC,alphaS,delta,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT)*mean(Q5))
+          }
+        }
+      }
+    }
+    Q3[t]=sum(Q4)
+  }
+
+  
+  Q6=rep(0,MTP)
+  for(t in 1:MTP){
+    Q7=rep(0,NTP)
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if (NLG[i]==GridIndic){
+          if(EXPT[i]<=t & (EXPT[i]+INCPR[i])>t & EXPT[i]!=0){
+            
+            
+            Q8=c()
+            for(L in 1:50){
+              Q8[L]=AV3(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L)
+            }
+            
+            Q7[i]=-1*as.numeric((FUNC1(NLG,EUC,alphaS,delta,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT))^2*mean(Q8))
+          }
+        }
+      }
+    }
+    Q6[t]=sum(Q7)
+  }
+
+  
+  EstAlpha=alphaS-(sum(Q1)+sum(Q3,na.rm=T))/(sum(Q1)+sum(Q3,na.rm=T)+sum(Q6,na.rm=T))
+  
+  
+  
+  Q9=array(0,c(DXSUS,1,MTP))
+  
+  for(t in 1:MTP){
+    Q10=array(0,c(DXSUS,1,NTP))
+    
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if (NLG[i]==GridIndic){
+          if(EXPT[i]>t|EXPT[i]==0){
+            Q10[,,i]=-1*XSUS[GridIndic,]*as.numeric(FUNC1(NLG,EUC,EstAlpha,delta,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT)*AV1(PST,GridIndic))
+          }
+        }
+      }
+    }
+    Q9[,,t]=apply(Q10,c(1,2),sum)
+    
+  }
+   
+  
+  
+  
+  Q11=array(0,c(DXSUS,1,MTP))
+  
+  for(t in 1:MTP){
+    Q12=array(0,c(DXSUS,1,NTP))
+    
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if(NLG[i]==GridIndic){
+          if(EXPT[i]<=t & (EXPT[i]+INCPR[i])>t & EXPT[i]!=0){
+            
+            
+            Q13=c()
+            for(L in 1:50){
+              Q13[L]=AV2(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L)
+            }
+            
+            Q12[,,i]=1*XSUS[GridIndic,]*as.numeric(FUNC1(NLG,EUC,EstAlpha,delta,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT)*mean(Q13))
+          }
+        }
+      }
+    }
+    Q11[,,t]=apply(Q12,c(1,2),sum,na.rm=T)
+    
+  }
+    
+  
+    
+  
+  
+  Q14=array(0,c(DXSUS,DXSUS,MTP))
+  
+  for(t in 1:MTP){
+    Q15=array(0,c(DXSUS,DXSUS,NTP))
+    
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if (NLG[i]==GridIndic){
+          if(EXPT[i]>t|EXPT[i]==0){
+            Q15[,,i]=-1*XSUS[GridIndic,]%*%t(XSUS[GridIndic,])*as.numeric(FUNC1(NLG,EUC,EstAlpha,delta,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT)*AV1(PST,GridIndic))
+          }
+        }
+      }
+    }
+    Q14[,,t]=apply(Q15,c(1,2),sum)
+    
+  }
+    
+  
+  
+  
+  Q16=array(0,c(DXSUS,DXSUS,MTP))
+  
+  for(t in 1:MTP){
+    Q17=array(0,c(DXSUS,DXSUS,NTP))
+    
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if(NLG[i]==GridIndic){
+          if(EXPT[i]<=t & (EXPT[i]+INCPR[i])>t & EXPT[i]!=0){
+            
+            Q18=c()
+            for(L in 1:50){
+              Q18[L]=AV2(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L)
+            }
+            
+            
+            Q17[,,i]=1*XSUS[GridIndic,]%*%t(XSUS[GridIndic,])*as.numeric(FUNC1(NLG,EUC,EstAlpha,delta,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT)*mean(Q18))
+          }
+        }
+      }
+    }
+    Q16[,,t]=apply(Q17,c(1,2),sum)
+    
+  }
+   
+  
+  
+  
+  
+  
+  Q19=array(0,c(DXSUS,DXSUS,MTP))
+  
+  for(t in 1:MTP){
+    Q20=array(0,c(DXSUS,DXSUS,NTP))
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if (NLG[i]==GridIndic){
+          if(EXPT[i]<=t & (EXPT[i]+INCPR[i])>t & EXPT[i]!=0){
+            
+            Q21=c()
+            for(L in 1:50){
+              Q21[L]=AV3(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L)
+            }
+            
+            Q20[,,i]=-1*XSUS[GridIndic,]%*%t(XSUS[GridIndic,])*as.numeric((FUNC1(NLG,EUC,EstAlpha,delta,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT))^2*mean(Q21))
+          }
+        }
+      }
+    }
+    Q19[,,t]=apply(Q20,c(1,2),sum,na.rm=T)
+    
+  }
+    
+  
+   
+  
+  EstBeta2=BetaCovSus-solve(((apply(Q14,c(1,2),sum))+(apply(Q16,c(1,2),sum,na.rm=T))+ (apply(Q19,c(1,2),sum))) )%*% ((apply(Q9,c(1,2),sum))+ (apply(Q11,c(1,2),sum)))
+  
+  
+  
+  Q22=rep(0,MTP)
+  for(t in 1:MTP){
+    Q23=rep(0,NTP)
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if (NLG[i]==GridIndic){
+          if(EXPT[i]>t|EXPT[i]==0){
+            Q23[i]=-1*as.numeric(FUNC1(NLG,EUC,EstAlpha,delta,i,GridIndic,t,BetaCovInf,EstBeta2,alphaT)*AV1(PST,GridIndic))
+          }
+        }
+      }
+    }
+    Q22[t]=sum(Q23)
+  }
+    
+  
+  
+  
+  Q24=rep(0,MTP)
+  for(t in 1:MTP){
+    Q25=rep(0,NTP)
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if(NLG[i]==GridIndic){
+          if(EXPT[i]<=t & (EXPT[i]+INCPR[i])>t & EXPT[i]!=0){
+            
+            Q26=c()
+            for(L in 1:50){
+              Q26[L]=AV2(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L)
+            }
+            
+            
+            Q25[i]=1*as.numeric(FUNC1(NLG,EUC,EstAlpha,delta,i,GridIndic,t,BetaCovInf,EstBeta2,alphaT)*mean(Q26))
+          }
+        }
+      }
+    }
+    Q24[t]=sum(Q25)
+  }
+   
+    
+  
+  Q27=rep(0,MTP)
+  for(t in 1:MTP){
+    Q28=rep(0,NTP)
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if (NLG[i]==GridIndic){
+          if(EXPT[i]<=t & (EXPT[i]+INCPR[i])>t & EXPT[i]!=0){
+            
+            Q29=c()
+            for(L in 1:50){
+              Q29[L]=AV3(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L)
+            }
+            
+            Q28[i]=-1*as.numeric((FUNC1(NLG,EUC,EstAlpha,delta,i,GridIndic,t,BetaCovInf,EstBeta2,alphaT))^2*mean(Q29))
+          }
+        }
+      }
+    }
+    Q27[t]=sum(Q28)
+  }
+    
+    
+  
+  EstAlphaT=alphaT- ((sum(Q22))+(sum(Q24,na.rm=T)))/ (((sum(Q22))+(sum(Q24,na.rm=T)))+ (sum(Q27,na.rm=T)))
+  
+  
+  Q30=array(0,c(DXINF,1,MTP))
+  for(t in 1:MTP){
+    Q31=array(0,c(DXINF,1,NTP))
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if (NLG[i]==GridIndic){
+          if(EXPT[i]>t|EXPT[i]==0){
+            Q31[,,i]=-1*FUNC2(NLG,EUC,EstAlpha,delta,i,GridIndic,t,BetaCovInf,EstBeta2,EstAlphaT)*AV1(PST,GridIndic)
+          }
+        }
+      }
+    }
+    Q30[,,t]=apply(Q31,c(1,2),sum,na.rm=T)
+  }
+    
+  
+  
+  Q32=array(0,c(DXINF,1,MTP))
+  for(t in 1:MTP){
+    Q33=array(0,c(DXINF,1,NTP))
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if(NLG[i]==GridIndic){
+          if(EXPT[i]<=t & (EXPT[i]+INCPR[i])>t & EXPT[i]!=0){
+            
+            
+            Q34=c()
+            for(L in 1:50){
+              Q34[L]=AV2(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L)
+            }
+            
+            Q33[,,i]=1*FUNC2(NLG,EUC,EstAlpha,delta,i,GridIndic,t,BetaCovInf,EstBeta2,EstAlphaT)*as.numeric(mean(Q34))
+          }
+        }
+      }
+    }
+    Q32[,,t]=apply(Q33,c(1,2),sum,na.rm=T)
+  }
+    
+    
+  
+  
+  
+  Q35=array(0,c(DXINF,DXINF,MTP))
+  
+  for(t in 1:MTP){
+    Q36=array(0,c(DXINF,DXINF,NTP))
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if (NLG[i]==GridIndic){
+          if(EXPT[i]>t|EXPT[i]==0){
+            Q36[,,i]=-1*FUNC3(NLG,EUC,EstAlpha,delta,i,GridIndic,t,BetaCovInf,EstBeta2,EstAlphaT)*as.numeric(AV1(PST,GridIndic))
+          }
+        }
+      }
+    }
+    Q35[,,t]=apply(Q36,c(1,2),sum,na.rm=T)
+  }
+    
+  
+  
+  
+  Q37=array(0,c(DXINF,DXINF,MTP))
+  
+  for(t in 1:MTP){
+    Q38=array(0,c(DXINF,DXINF,NTP))
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if(NLG[i]==GridIndic){
+          if(EXPT[i]<=t & (EXPT[i]+INCPR[i])>t & EXPT[i]!=0){
+            
+            Q39=c()
+            for(L in 1:50){
+              Q39[L]=AV2(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L)
+            }
+            
+            
+            Q38[,,i]=1*FUNC3(NLG,EUC,EstAlpha,delta,i,GridIndic,t,BetaCovInf,EstBeta2,EstAlphaT)*as.numeric(mean(Q39))
+          }
+        }
+      }
+    }
+    Q37[,,t]=apply(Q38,c(1,2),sum,na.rm=T)
+  }
+    
+  
+   
+  
+  
+  
+  
+  Q40=array(0,c(DXINF,DXINF,MTP))
+  
+  for(t in 1:MTP){
+    Q41=array(0,c(DXINF,DXINF,NTP))
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if (NLG[i]==GridIndic){
+          if(EXPT[i]<=t & (EXPT[i]+INCPR[i])>t & EXPT[i]!=0){
+            
+            
+            Q42=c()
+            for(L in 1:50){
+              Q42[L]=AV3(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L)
+            }
+            
+            
+            Q41[,,i]=-1*FUNC2(NLG,EUC,EstAlpha,delta,i,GridIndic,t,BetaCovInf,EstBeta2,EstAlphaT)%*%t(FUNC2(NLG,EUC,EstAlpha,delta,i,GridIndic,t,BetaCovInf,EstBeta2,EstAlphaT))*as.numeric(mean(Q42))
+          }
+        }
+      }
+    }
+    Q40[,,t]=apply(Q41,c(1,2),sum,na.rm=T)
+  }
+    
+   
+  
+  EstBeta3=BetaCovInf-solve((((apply(Q35,c(1,2),sum,na.rm=T))+ (apply(Q37,c(1,2),sum,na.rm=T)))+ (apply(Q40,c(1,2),sum,na.rm=T))))%*% ((apply(Q30,c(1,2),sum,na.rm=T))+ (apply(Q32,c(1,2),sum,na.rm=T)))
+  
+  
+  
+  Q43=rep(0,MTP)
+  for(t in 1:MTP){
+    Q44=rep(0,NTP)
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if(NLG[i]==GridIndic){
+          if(EXPT[i]>t|EXPT[i]==0){
+            Q44[i]=1*as.numeric(FUNC4(NLG,EUC,EstAlpha,delta,i,GridIndic,t,EstBeta3,EstBeta2,EstAlphaT)*AV1(PST,GridIndic))
+          }
+        }
+      }
+    }
+    Q43[t]=sum(Q44,na.rm=T)
+  }
+    
+  
+  
+  
+  Q45=rep(0,MTP)
+  for(t in 1:MTP){
+    Q46=rep(0,NTP)
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if(NLG[i]==GridIndic){
+          if(EXPT[i]<=t & (EXPT[i]+INCPR[i])>t & EXPT[i]!=0){
+            
+            
+            Q47=c()
+            for(L in 1:50){
+              Q47[L]=AV2(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L)
+            }
+            
+            
+            Q46[i]=-1*as.numeric(FUNC4(NLG,EUC,EstAlpha,delta,i,GridIndic,t,EstBeta3,EstBeta2,EstAlphaT)*mean(Q47))
+          }
+        }
+      }
+    }
+    Q45[t]=sum(Q46)
+  }
+   
+  
+   
+  
+  
+  Q48=rep(0,MTP)
+  for(t in 1:MTP){
+    Q49=rep(0,NTP)
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if(NLG[i]==GridIndic){
+          if(EXPT[i]>t|EXPT[i]==0){
+            Q49[i]=-1*as.numeric(FUNC5(NLG,EUC,EstAlpha,delta,i,GridIndic,t,EstBeta3,EstBeta2,EstAlphaT)*AV1(PST,GridIndic))
+          }
+        }
+      }
+    }
+    Q48[t]=sum(Q49)
+  }
+    
+  
+  
+  Q50=rep(0,MTP)
+  for(t in 1:MTP){
+    Q51=rep(0,NTP)
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if(NLG[i]==GridIndic){
+          if(EXPT[i]<=t & (EXPT[i]+INCPR[i])>t & EXPT[i]!=0){
+            
+            Q52=c()
+            for(L in 1:50){
+              Q52[L]=AV2(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L)
+            }
+            
+            
+            Q53=c()
+            for(L in 1:50){
+              Q53[L]=AV3(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L)
+            }
+            
+            Q51[i]=1*as.numeric(FUNC5(NLG,EUC,EstAlpha,delta,i,GridIndic,t,EstBeta3,EstBeta2,EstAlphaT)*mean(Q52))-1*as.numeric((FUNC4(NLG,EUC,EstAlpha,delta,i,GridIndic,t,EstBeta3,EstBeta2,EstAlphaT))^2*mean(Q53))
+          }
+        }
+      }
+    }
+    Q50[t]=sum(Q51)
+  }
+    
+  
+    
+  
+  Estdelta=delta-((sum(Q43,na.rm=T))+(sum(Q45,na.rm=T)))/ ((sum(Q48))+ (sum(Q50,na.rm=T)))
+  
+  require(psych)
+  
+  LGK1=function(par){
+    lambda1=par[[1]]
+    sigma1=par[[2]]
+    LGTEMP=c()
+    for(L in 1:50){
+      LGTEMP[L]=dmvnorm(PST[L,], rep(0,NTG), solve(sigma1^2*(as.numeric(lambda1)*D+(1-as.numeric(lambda1))*I)), log = t)
+    }
+     -mean(LGTEMP)
+  }
+  
+  
+
+  
+  
+    
+    DUM=optim(c(lambda1,sigma1),LGK1)
+  EstU1=DUM$par
+  
+  EstGammau=EstU1[1]
+  HatSigmmaU=EstU1[2]
+  
+  
+  result=list(PST=PST,BetaCovInf=EstBeta3,BetaCovSus=EstBeta2,Uhat=EstU1,alphaS=EstAlpha,alphaT=EstAlphaT,delta=Estdelta,sigma1=HatSigmmaU,lambda1=EstGammau)
+  result
+}
+
+
+
+LGLK=function(NLG,PST1,EUC,alphaS,delta,lambda1,sigma1,BetaCovInf,BetaCovSus,alphaT){
+  
+  
+  
+  AVG1=function(PST1,GridIndic){
+    d1=c()
+    for(L in 1:50){
+      d1[L]=exp(PST1[L,GridIndic])
+    }
+     
+    return(mean(d1))
+  }
+  
+  
+  AVG2=function(NLG,PST1,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L){
+    
+    dx1=rep(0,NTP)
+    for(j in 1:NTP){
+      if (NEWNLG[j,GridIndic]!=0){
+        if(INFECT[j]<=t & (INFECT[j]+INFPR[j])>=t & INFECT[j]!=0){
+          dx1[j]=1*exp(alphaT+XINF[j,]%*%BetaCovInf)*EUC[i,j]^(-delta)
+        }
+      }
+    }
+    
+    PR1=1-exp(-1*exp(alphaS+XSUS[GridIndic,]%*%BetaCovSus+PST1[L,GridIndic])*sum(replace(dx1,is.infinite(dx1),0)))
+    
+    if(PR1==0){AVG2s=0}
+    
+    if(PR1!=0){
+      AVG2s=log(PR1)
+    }
+    
+    return(AVG2s)
+  }
+  
+  
+  
+  Q80=rep(0,MTP)
+  for(t in 1:MTP){
+    Q81=rep(0,NTP)
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if (NLG[i]==GridIndic){
+          if(EXPT[i]>t|EXPT[i]==0){
+            Q81[i]=-1*as.numeric(FUNC1(NLG,EUC,alphaS,delta,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT)*AVG1(PST1,GridIndic))
+          }
+        }
+      }
+    }
+    Q80[t]=sum(Q81)
+  }
+    
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  Q82=rep(0,MTP)
+  for(t in 1:MTP){
+    Q83=rep(0,NTP)
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if (NLG[i]==GridIndic){
+          if(EXPT[i]<=t & (EXPT[i]+INCPR[i])>t & EXPT[i]!=0){
+            
+            Q84=c()
+            for(L in 1:50){
+              Q84[L]=AVG2(NLG,PST1,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L)
+            }
+            
+            Q83[i]=as.numeric(mean(Q84))
+          }
+        }
+      }
+    }
+    Q82[t]=sum(Q83)
+  }
+    
+  
+  
+  
+  LGTEMP=c()
+  for(L in 1:50){
+    LGTEMP[L]=dmvnorm(PST1[L,], rep(0,NTG), solve(sigma1^2*(as.numeric(lambda1)*D+(1-as.numeric(lambda1))*I)), log = T)
+  }
+    
+  
+   
+  return(mean(LGTEMP)+ (sum(Q82))+ (sum(Q80)))
+}
+
+
+
+
+
+
+
+
+
+   
+  
+ 
+ESTRES= ESTFN(NLG,EUC,alphaS0,delta0,lambda0,sigma0,BetaCovInf0,BetaCovSus0,alphaT0)
+alphaS=ESTRES$alphaS
+alphaS
+delta=ESTRES$delta
+delta
+lambda1=ESTRES$lambda1
+lambda1
+sigma1=ESTRES$sigma1
+sigma1
+BetaCovInf=ESTRES$BetaCovInf
+BetaCovInf
+BetaCovSus=ESTRES$BetaCovSus
+BetaCovSus
+alphaT=ESTRES$alphaT
+Uhat=ESTRES$Uhat
+PST1=ESTRES$PST
+
+##########################################################################################
+##########################################################################################
+##########################################################################################
+##########################################################################################
+##########################################################################################
+##########################################################################################
+rm(list = ls())
+require(optimization)
+require(spectralGP)
+require(MASS)
+require(mvtnorm)
+require(maxLik)
+require(psych)
+require(ngspatial)
+require(pracma)
+GD1       <- 30
+GD2       <- 30
+NPPG        <- 500
+NTG       <- GD1^2
+NAllPPG   <- rep(NPPG , NTG)
+NTP       <- sum(NAllPPG)
+MTP      <- 80
+sigma0    <- 0.8
+lambda0   <- 0.5
+alphaS0   <- -5
+delta0    <- 1.5
+alphaT0   <- 0
+make_coords <- function(NPPG , GD1, xrange, yrange) {
+  xmat <- matrix(0, NPPG , GD1)
+  ymat <- matrix(0, NPPG , GD1)
+  for (i in 1:GD1) {
+    xmat[, i] <- runif(NPPG , xrange[1], xrange[2])
+    ymat[, i] <- runif(NPPG , yrange[1] * (i - 1), yrange[2] * i)
+  }
+  list(x = c(xmat), y = c(ymat))
+}
+
+coords1 <- make_coords(NPPG , GD1, c(0, GD2 * 1), c(GD2, GD2))
+coords2 <- make_coords(NPPG , GD1, c(GD2 * 1, GD2 * 2), c(GD2, GD2))
+coords3 <- make_coords(NPPG , GD1, c(GD2 * 2, GD2 * 3), c(GD2, GD2))
+
+xxx <- c(coords1$x, coords2$x, coords3$x)
+yyy <- c(coords1$y, coords2$y, coords3$y)
+
+data <- data.frame(xxx, yyy)
+Lat  <- data[, 1]
+Long <- data[, 2]
+
+I   <- diag(NTG)
+D   <- -1*adjacency.matrix(GD1, GD1)
+diag(D) <- colSums(adjacency.matrix(GD1, GD1))
+
+NLG1 <- lapply(1:NTG, function(i) rep(i, NAllPPG[i]))
+NLG  <- unlist(NLG1)
+
+NEWNLG <- matrix(0, NTP, NTG)
+for (GridIndic in 1:NTG) {
+  NEWNLG[, GridIndic] <- rep(D[, GridIndic], NAllPPG)
+}
+
+EUC <- as.matrix(dist(cbind(Lat, Long)))
+
+Sigma0 <- solve(sigma0^2 * (lambda0 * D + (1 - lambda0) * I))
+phi    <- mvrnorm(1, rep(0, NTG), Sigma0, tol = 1e-6)
+
+XSUS <- cbind(rnorm(NTG, 0, 1), runif(NTG, 0, 1))
+XINF <- cbind(rnorm(NTP, 0, 1), runif(NTP, 0, 1))
+
+DXINF <- ncol(XINF)
+DXSUS <- ncol(XSUS)
+
+BetaCovInf0 <- rep(1, DXINF)
+BetaCovSus0 <- rep(1, DXSUS)
+
+D1 <- sapply(1:NTG, function(GridIndic) sample(NAllPPG[GridIndic], 1, replace = FALSE))
+
+EXPT1 <- lapply(1:NTG, function(i) {
+  v <- rep(0, NAllPPG[i])
+  v[D1[i]] <- 1
+  v
+})
+
+EXPT <- unlist(EXPT1)
+
+INFPR  <- rep(3, NTP)
+INCPR  <- rep(3,  NTP)
+INCPR1 <- INCPR[1]  
+
+INFECT <- ifelse(EXPT > 0, EXPT + INCPR1, EXPT)
+
+for (t in 1:MTP) {
+  for (i in 1:NTP) {
+    for (GridIndic in 1:NTG) {
+      if (NLG[i] == GridIndic && INFECT[i] == 0) {
+        
+        InfForc <- rep(0, NTP)
+        for (j in 1:NTP) {
+          if (NEWNLG[j, GridIndic] != 0 &&
+              INFECT[j] <= t &&
+              (INFECT[j] + INFPR[j]) >= t &&
+              INFECT[j] != 0) {
+            InfForc[j] <- exp(alphaT0 + XINF[j, ] %*% BetaCovInf0) *
+              exp(EUC[i, j] * (-delta0))
+          }
+        }
+        
+        InfForc <- replace(InfForc, is.infinite(InfForc), 0)
+        SInfForc <- sum(InfForc)
+        
+        if ((1 - exp(-exp(alphaS0 + XSUS[GridIndic, ] %*% BetaCovSus0 + phi[GridIndic]) * SInfForc))>(runif(1))) {
+          INFECT[i] <- t + 1
+        }
+      }
+    }
+  }
+}
+
+EXPT <- INFECT - INCPR1
+
+NUMinf  <- numeric(MTP)
+for (t in 1:MTP) {
+  NUMinf [t] <- sum(INFECT <= t & (INFECT + INFPR - 1) >= t)
+}
+
+#plot(1:MTP, NUMinf , type = "o", col = "red", lwd = 2,
+  #   xlab = "Time (t)", ylab = "Number of Infected",
+ #    main = "Number of Infectious Individuals Over Time")
+#grid()
+
+INFlist <- vector("list", MTP)
+
+for (t in 1:MTP) {
+  ids <- which(INFECT != 0 & INFECT <= t & (INFECT + INFPR) >= t)
+  
+  if (length(ids) > 0) {
+    INFlist[[t]] <- data.frame(
+      id    = ids,
+      lat   = Lat[ids],
+      long  = Long[ids],
+      grid  = NLG[ids],
+      time  = t
+    )
+  } else {
+    INFlist[[t]] <- data.frame(
+      id    = integer(0),
+      lat   = numeric(0),
+      long  = numeric(0),
+      grid  = integer(0),
+      time  = integer(0)
+    )
+  }
+}
+
+
+INFDATA <- do.call(rbind, INFlist)
+
+#head(INFDATA)
+#View(INFDATA)
+
+
+INFTEDlist <- vector("list", MTP)
+
+for (t in 1:MTP) {
+  ids <- which(INFECT == t)
+  
+  if (length(ids) > 0) {
+    INFTEDlist[[t]] <- data.frame(
+      id    = ids,
+      lat   = Lat[ids],
+      long  = Long[ids],
+      grid  = NLG[ids],
+      time  = t
+    )
+  } else {
+    INFTEDlist[[t]] <- data.frame(
+      id    = integer(0),
+      lat   = numeric(0),
+      long  = numeric(0),
+      grid  = integer(0),
+      time  = integer(0)
+    )
+  }
+}
+
+INFTEDDATA <- do.call(rbind, INFTEDlist)
+
+#head(INFTEDDATA)
+#View(INFTEDDATA)
+
+
+NEWINFTED <- numeric(MTP)
+
+for (t in 1:MTP) {
+  NEWINFTED[t] <- sum(INFECT == t)
+}
+
+#plot(1:MTP, NEWINFTED, type = "o", col = "darkgreen", lwd = 2,
+ #    xlab = "Time (t)", ylab = "Number of Newly Infected",
+ #    main = "Number of Newly Infected Individuals Over Time")
+#grid()
+
+SILBND <- function(x) {
+  n  <- length(x)
+  sd_x <- sd(x)
+  iqr_x <- IQR(x)
+  sigma <- min(sd_x, iqr_x / 1.34)
+  hs <- 1.06 * sigma * n^(-1/5)
+  return(hs)
+}
+
+hs_lat  <- SILBND(INFDATA$lat)
+hs_long <- SILBND(INFDATA$long)
+hs <- sqrt(hs_lat * hs_long)  
+
+rho  <- INFPR[1]    
+eps    <- 0.05    
+n_max  <- 10    
+xi     <- 0.7     
+
+SILBND <- function(x) {
+  n  <- length(x)
+  sd_x <- sd(x)
+  iqr_x <- IQR(x)
+  sigma <- min(sd_x, iqr_x / 1.34)
+  hs <- 1.06 * sigma * n^(-1/5)
+  return(hs)
+}
+
+hs_lat  <- SILBND(INFDATA$lat)
+hs_long <- SILBND(INFDATA$long)
+hs <- sqrt(hs_lat * hs_long) 
+
+eta <- function(dt, rho, eps) {
+  w <- exp((log(eps)/rho) * dt)
+  w[(dt < 0) | (dt > rho)] <- 0
+  return(w)
+}
+
+
+TWKDE <- function(x, y, data, hs, rho, eps, current_time) {
+  dt  <- current_time - data$onset
+  wt  <- eta(dt, rho, eps)
+  if (sum(wt) == 0) return(0)
+  
+  KER <- exp(-((x - data$lat)^2 + (y - data$long)^2)/(2*hs^2))
+  num <- sum(wt * KER)
+  den <- 2 * pi * hs^2 * sum(wt)
+  return(num / den)
+}
+
+
+Tmax <- max(INFDATA$time)
+SAMPRES <- list()
+IPERSIST <- data.frame()  
+
+for (t in 1:Tmax) {
+  
+  
+  IPERSIST <- subset(INFTEDDATA, time < t & time + rho - 1 >= t)
+  
+  INEW <- subset(INFTEDDATA, time == t)
+  
+  IFULL <- rbind(IPERSIST, INEW)
+  
+  if(nrow(INEW)>=n_max){
+    
+    n_s <- min(ceiling(xi * nrow(INEW)))
+    n_new=n_s
+    
+    dt  <- t - INFECT[IFULL$id]
+    wt  <- eta(dt, rho, eps)
+    if (sum(wt) == 0) return(0)
+    
+    kernel=rep(0,nrow(IFULL))
+    KER=rep(0,nrow(INEW))
+    for(j in 1:nrow(INEW)){
+      for(i in 1:nrow(IFULL)){
+        kernel[i]=(wt[i]*exp(-((INEW$lat[j]-IFULL$lat[i])^2+(INEW$long[j]-IFULL$long[i])^2)/(2*hs^2)))
+      }
+      KER[j]=sum(kernel)/(2*pi*hs^2*sum(wt))
+    }
+    
+    
+    PROB <- KER / sum(KER)
+    
+    SAMPIDX <- sample(1:nrow(INEW), size = n_new,
+                         prob = PROB, replace = FALSE)
+    IPPS <- INEW[SAMPIDX, ]
+  } else {
+    IPPS <- data.frame()
+  }
+  
+  
+  if(nrow(IPPS) > 0){
+    
+    INFTEDDATA <- INFTEDDATA[INFTEDDATA$time != t, ]
+    INFTEDDATA <- rbind(INFTEDDATA, IPPS)
+    
+  }
+  
+  
+}
+
+
+NEWINFTEDSAMP<- numeric(MTP)
+for (t in 1:MTP) {
+  
+  NEWINFTEDSAMP[t] <- sum( INFTEDDATA$time == t)
+}
+
+#plot(1:MTP, NEWINFTEDSAMP, type = "o", col = "darkgreen", lwd = 2,
+ #    xlab = "Time (t)", ylab = "Number of Newly Infected",
+ #    main = "Number of Newly Infected Individuals Over Time")
+
+NEWINFTED <- numeric(MTP)
+
+for (t in 1:MTP) {
+  NEWINFTED[t] <- sum(INFECT == t)
+}
+
+#plot(1:MTP, NEWINFTED, type = "o", col = "darkgreen", lwd = 2,
+ #    xlab = "Time (t)", ylab = "Number of Newly Infected",
+ #    main = "Number of Newly Infected Individuals Over Time")
+#y_max <- max(c(NEWINFTEDSAMP, NEWINFTED))
+
+
+#plot(1:MTP, NEWINFTEDSAMP, type = "o", col = "darkgreen", lwd = 2,
+#     xlab = "Time (t)", ylab = "Number of Newly Infected",
+ #    main = "Number of Newly Infected Individuals Over Time",
+ #    ylim = c(0, y_max))
+
+#lines(1:MTP, NEWINFTED, type = "o", col = "blue", lwd = 2)
+
+EXPT <- rep(0, length(INFECT))
+
+EXPT[INFTEDDATA$id] <- INFTEDDATA$time
+EXPT <- EXPT - INCPR1
+
+#EXPT
+
+FUNC1=function(NLG,EUC,alphaS,delta,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT){
+  
+  FUNC11=rep(0,NTP)
+  for(j in 1:NTP){
+    if (NEWNLG[j,GridIndic]!=0){
+      if(INFECT[j]<=t & (INFECT[j]+INFPR[j])>=t & INFECT[j]!=0){
+        FUNC11[j]=1*exp(alphaT+XINF[j,]%*%BetaCovInf)*EUC[i,j]^(-delta)
+      }
+    }
+  }
+  
+  FUNC111=exp(alphaS+XSUS[GridIndic,]%*%BetaCovSus)*sum(replace(FUNC11,is.infinite(FUNC11),0))
+  
+  return(FUNC111)
+}
+
+
+FUNC2=function(NLG,EUC,alphaS,delta,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT){
+  
+  FUNC22=array(0,c(DXINF,1,NTP))
+  for(j in 1:NTP){
+    if (NEWNLG[j,GridIndic]!=0){
+      if(INFECT[j]<=t & (INFECT[j]+INFPR[j])>=t & INFECT[j]!=0){
+        FUNC22[,,j]=1*XINF[j,]*as.numeric(exp(alphaT+XINF[j,]%*%BetaCovInf))*EUC[i,j]^(-delta)
+      }
+    }
+  }
+  FUNC22[!is.finite(FUNC22)]=NA
+  
+  return(apply(FUNC22,c(1,2),sum,na.rm=T)*as.numeric(exp(alphaS+XSUS[GridIndic,]%*%BetaCovSus)))
+}
+
+FUNC3=function(NLG,EUC,alphaS,delta,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT){
+  
+  FUNC33=array(0,c(DXINF,DXINF,NTP))
+  for(j in 1:NTP){
+    if (NEWNLG[j,GridIndic]!=0){
+      if(INFECT[j]<=t & (INFECT[j]+INFPR[j])>=t & INFECT[j]!=0){
+        FUNC33[,,j]=1*XINF[j,]%*%t(XINF[j,])*as.numeric(exp(alphaT+XINF[j,]%*%BetaCovInf))*EUC[i,j]^(-delta)
+      }
+    }
+  }
+  FUNC33[!is.finite(FUNC33)]=NA
+  
+  return(apply(FUNC33,c(1,2),sum,na.rm=T)*as.numeric(exp(alphaS+XSUS[GridIndic,]%*%BetaCovSus)))
+}
+
+
+FUNC4=function(NLG,EUC,alphaS,delta,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT){
+  
+  FUNC44=rep(0,NTP)
+  for(j in 1:NTP){
+    if (NEWNLG[j,GridIndic]!=0){
+      if(INFECT[j]<=t & (INFECT[j]+INFPR[j])>=t & INFECT[j]!=0){
+        FUNC44[j]=1*exp(alphaT+XINF[j,]%*%BetaCovInf)*EUC[i,j]^(-delta)*(log(EUC[i,j]))
+      }
+    }
+  }
+  
+  
+  FUNC444=exp(alphaS+XSUS[GridIndic,]%*%BetaCovSus)*sum(replace(FUNC44,is.infinite(FUNC44),0))
+  
+  return(FUNC444)
+}
+
+
+FUNC5=function(NLG,EUC,alphaS,delta,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT){
+  
+  FUNC55=rep(0,NTP)
+  for(j in 1:NTP){
+    if (NEWNLG[j,GridIndic]!=0){
+      if(INFECT[j]<=t & (INFECT[j]+INFPR[j])>=t & INFECT[j]!=0){
+        FUNC55[j]=1*exp(alphaT+XINF[j,]%*%BetaCovInf)*EUC[i,j]^(-delta)*(log(EUC[i,j]))^2
+      }
+    }
+  }
+  
+  FUNC555=exp(alphaS+XSUS[GridIndic,]%*%BetaCovSus)*sum(replace(FUNC55,is.infinite(FUNC55),0))
+  
+  return(FUNC555)
+}
+
+FUNC6=function(phi,alphaS,delta,lambda1,sigma1,BetaCovInf,BetaCovSus,alphaT){
+  
+  FUNC7=array(0,c(NTP,MTP,NTG))
+  for(i in 1:NTP){
+    for(t in 1:MTP){
+      for(GridIndic in 1:NTG){
+        if(NLG[i]==GridIndic){
+          if(EXPT[i]>t|EXPT[i]==0){
+            
+            
+            dx1=rep(0,NTP)
+            for(j in 1:NTP){
+              if (NEWNLG[j,GridIndic]!=0){
+                if(INFECT[j]<=t & (INFECT[j]+INFPR[j])>=t & INFECT[j]!=0){
+                  dx1[j]=1*exp(alphaT+XINF[j,]%*%BetaCovInf)*EUC[i,j]^(-delta)
+                }
+              }
+            }
+            
+            
+            PR1=1-exp(-1*exp(alphaS+XSUS[GridIndic,]%*%BetaCovSus+phi[GridIndic])*sum(replace(dx1,is.infinite(dx1),0)))
+            
+            
+            FUNC7[i,t,GridIndic]=(1-PR1)
+            
+            
+          }
+          
+          if(EXPT[i]<=t & (EXPT[i]+INCPR[i])>t & EXPT[i]!=0){
+            
+            dx4=rep(0,NTP)
+            for(j in 1:NTP){
+              if (NEWNLG[j,GridIndic]!=0){
+                if(INFECT[j]<=t & (INFECT[j]+INFPR[j])>=t & INFECT[j]!=0){
+                  dx4[j]=1*exp(alphaT+XINF[j,]%*%BetaCovInf)*EUC[i,j]^(-delta)
+                }
+              }
+            }
+            
+            PR2=1-exp(-1*exp(alphaS+XSUS[GridIndic,]%*%BetaCovSus+phi[GridIndic])*sum(replace(dx4,is.infinite(dx4),0)))
+            
+            
+            FUNC7[i,t,GridIndic]=(PR2)
+            
+          }
+        }
+      }
+    }
+  }
+  
+  FUNC8=c()
+  FUNC9=list()
+  FUNC10=c()
+  for(GridIndic in 1:NTG){
+    for(i in 1:NTP){
+      FUNC8[i]=round(prod(FUNC7[i,,GridIndic][FUNC7[i,,GridIndic]>0]),10)
+    }
+    FUNC9[[GridIndic]]=which(FUNC8!=1)
+    FUNC10[GridIndic]=prod(FUNC8[FUNC9[[GridIndic]]][FUNC8[FUNC9[[GridIndic]]]>0])
+  }
+  return(FUNC10)
+}
+
+
+
+
+
+alphaS=alphaS0
+delta=delta0
+sigma1=sigma0
+lambda1=lambda0
+BetaCovInf=BetaCovInf0
+BetaCovSus=BetaCovSus0
+alphaT=alphaT0
+
+
+ ESTFN=function(NLG,EUC,alphaS,delta,lambda1,sigma1,BetaCovInf,BetaCovSus,alphaT){
+  
+  
+  PST=matrix(0,50+1,NTG)
+  mu=rep(0,NTG)
+  Sigma1=solve(sigma1^2*(lambda1*D+(1-lambda1)*I))
+  phi0=mvrnorm(1, mu, Sigma1, tol = 1e-6)
+  
+  PST[1,]=phi0
+  FN1=c()
+  FN2=c()
+  for(L in 2:50){
+    
+    phi=mvrnorm(1, mu, Sigma1, tol = 1e-6)
+    
+    FN3=FUNC6(phi,alphaS,delta,lambda1,sigma1,BetaCovInf,BetaCovSus,alphaT)
+    FN4=FUNC6(PST[L-1,],alphaS,delta,lambda1,sigma1,BetaCovInf,BetaCovSus,alphaT)
+    FN1[L]=runif(1,0,1)
+    
+    FN2[L]=min(1,prod(FN3/FN4))
+    if(FN1[L]<FN2[L]){
+      PST[L,]=phi
+    }
+    
+    if(FN1[L]>=FN2[L]){
+      PST[L,]=PST[L-1,]
+    }
+  }
+  
+  date()
+  
+  
+  AV1=function(PST,GridIndic){
+    d1=c()
+    for(L in 1:50){
+      d1[L]=exp(PST[L,GridIndic])
+    }
+    return(mean(d1))
+  }
+  
+  
+  AV2=function(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L){
+    
+    
+    dx1=rep(0,NTP)
+    for(j in 1:NTP){
+      if (NEWNLG[j,GridIndic]!=0){
+        if(INFECT[j]<=t & (INFECT[j]+INFPR[j])>=t & INFECT[j]!=0){
+          dx1[j]=1*exp(alphaT+XINF[j,]%*%BetaCovInf)*EUC[i,j]^(-delta)
+        }
+      }
+    }
+    
+    PR1=1-exp(-1*exp(alphaS+XSUS[GridIndic,]%*%BetaCovSus+PST[L,GridIndic])*sum(replace(dx1,is.infinite(dx1),0)))
+    
+    if(PR1==0){AV2s=0}
+    
+    if(PR1!=0){
+      AV2s=(1-PR1)/PR1*exp(PST[L,GridIndic])
+    }
+    
+    return(AV2s)
+  }
+  
+  
+  
+  
+  AV3=function(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L){
+    
+    
+    
+    dx1=rep(0,NTP)
+    for(j in 1:NTP){
+      if (NEWNLG[j,GridIndic]!=0){
+        if(INFECT[j]<=t & (INFECT[j]+INFPR[j])>=t & INFECT[j]!=0){
+          dx1[j]=1*exp(alphaT+XINF[j,]%*%BetaCovInf)*EUC[i,j]^(-delta)
+        }
+      }
+    }
+    
+    PR1=1-exp(-1*exp(alphaS+XSUS[GridIndic,]%*%BetaCovSus+PST[L,GridIndic])*sum(replace(dx1,is.infinite(dx1),0)))
+    
+    if(PR1==0){AV3s=0}
+    
+    if(PR1!=0){
+      AV3s=(1-PR1)/PR1^2*exp(2*PST[L,GridIndic])
+    }
+    
+    return(AV3s)
+  }
+  
+  
+  Q1=rep(0,MTP)
+  for(t in 1:MTP){
+    Q2=rep(0,NTP)
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if (NLG[i]==GridIndic){
+          if(EXPT[i]>t|EXPT[i]==0){
+            Q2[i]=-1*as.numeric(FUNC1(NLG,EUC,alphaS,delta,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT)*AV1(PST,GridIndic))
+          }
+        }
+      }
+    }
+    Q1[t]=sum(Q2)
+  }
+  
+  
+  
+  Q3=rep(0,MTP)
+  for(t in 1:MTP){
+    Q4=rep(0,NTP)
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if(NLG[i]==GridIndic){
+          if(EXPT[i]<=t & (EXPT[i]+INCPR[i])>t & EXPT[i]!=0){
+            
+            Q5=c()
+            for(L in 1:50){
+              Q5[L]=AV2(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L)
+            }
+            
+            Q4[i]=1*as.numeric(FUNC1(NLG,EUC,alphaS,delta,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT)*mean(Q5))
+          }
+        }
+      }
+    }
+    Q3[t]=sum(Q4)
+  }
+  
+  
+  Q6=rep(0,MTP)
+  for(t in 1:MTP){
+    Q7=rep(0,NTP)
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if (NLG[i]==GridIndic){
+          if(EXPT[i]<=t & (EXPT[i]+INCPR[i])>t & EXPT[i]!=0){
+            
+            
+            Q8=c()
+            for(L in 1:50){
+              Q8[L]=AV3(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L)
+            }
+            
+            Q7[i]=-1*as.numeric((FUNC1(NLG,EUC,alphaS,delta,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT))^2*mean(Q8))
+          }
+        }
+      }
+    }
+    Q6[t]=sum(Q7)
+  }
+  
+  
+  EstAlpha=alphaS-(sum(Q1)+sum(Q3,na.rm=T))/(sum(Q1)+sum(Q3,na.rm=T)+sum(Q6,na.rm=T))
+  
+  
+  
+  
+  Q9=array(0,c(DXSUS,1,MTP))
+  
+  for(t in 1:MTP){
+    Q10=array(0,c(DXSUS,1,NTP))
+    
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if (NLG[i]==GridIndic){
+          if(EXPT[i]>t|EXPT[i]==0){
+            Q10[,,i]=-1*XSUS[GridIndic,]*as.numeric(FUNC1(NLG,EUC,EstAlpha,delta,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT)*AV1(PST,GridIndic))
+          }
+        }
+      }
+    }
+    Q9[,,t]=apply(Q10,c(1,2),sum)
+    
+  }
+   
+  
+  
+  
+  Q11=array(0,c(DXSUS,1,MTP))
+  
+  for(t in 1:MTP){
+    Q12=array(0,c(DXSUS,1,NTP))
+    
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if(NLG[i]==GridIndic){
+          if(EXPT[i]<=t & (EXPT[i]+INCPR[i])>t & EXPT[i]!=0){
+            
+            
+            Q13=c()
+            for(L in 1:50){
+              Q13[L]=AV2(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L)
+            }
+            
+            Q12[,,i]=1*XSUS[GridIndic,]*as.numeric(FUNC1(NLG,EUC,EstAlpha,delta,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT)*mean(Q13))
+          }
+        }
+      }
+    }
+    Q11[,,t]=apply(Q12,c(1,2),sum,na.rm=T)
+    
+  }
+    
+  
+    
+  
+  
+  Q14=array(0,c(DXSUS,DXSUS,MTP))
+  
+  for(t in 1:MTP){
+    Q15=array(0,c(DXSUS,DXSUS,NTP))
+    
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if (NLG[i]==GridIndic){
+          if(EXPT[i]>t|EXPT[i]==0){
+            Q15[,,i]=-1*XSUS[GridIndic,]%*%t(XSUS[GridIndic,])*as.numeric(FUNC1(NLG,EUC,EstAlpha,delta,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT)*AV1(PST,GridIndic))
+          }
+        }
+      }
+    }
+    Q14[,,t]=apply(Q15,c(1,2),sum)
+    
+  }
+    
+  
+  
+  
+  Q16=array(0,c(DXSUS,DXSUS,MTP))
+  
+  for(t in 1:MTP){
+    Q17=array(0,c(DXSUS,DXSUS,NTP))
+    
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if(NLG[i]==GridIndic){
+          if(EXPT[i]<=t & (EXPT[i]+INCPR[i])>t & EXPT[i]!=0){
+            
+            Q18=c()
+            for(L in 1:50){
+              Q18[L]=AV2(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L)
+            }
+            
+            
+            Q17[,,i]=1*XSUS[GridIndic,]%*%t(XSUS[GridIndic,])*as.numeric(FUNC1(NLG,EUC,EstAlpha,delta,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT)*mean(Q18))
+          }
+        }
+      }
+    }
+    Q16[,,t]=apply(Q17,c(1,2),sum)
+    
+  }
+   
+  
+  
+  
+  
+  
+  Q19=array(0,c(DXSUS,DXSUS,MTP))
+  
+  for(t in 1:MTP){
+    Q20=array(0,c(DXSUS,DXSUS,NTP))
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if (NLG[i]==GridIndic){
+          if(EXPT[i]<=t & (EXPT[i]+INCPR[i])>t & EXPT[i]!=0){
+            
+            Q21=c()
+            for(L in 1:50){
+              Q21[L]=AV3(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L)
+            }
+            
+            Q20[,,i]=-1*XSUS[GridIndic,]%*%t(XSUS[GridIndic,])*as.numeric((FUNC1(NLG,EUC,EstAlpha,delta,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT))^2*mean(Q21))
+          }
+        }
+      }
+    }
+    Q19[,,t]=apply(Q20,c(1,2),sum,na.rm=T)
+    
+  }
+    
+  
+   
+  
+  EstBeta2=BetaCovSus-solve(((apply(Q14,c(1,2),sum))+(apply(Q16,c(1,2),sum,na.rm=T))+ (apply(Q19,c(1,2),sum))) )%*% ((apply(Q9,c(1,2),sum))+ (apply(Q11,c(1,2),sum)))
+  
+  
+  
+  Q22=rep(0,MTP)
+  for(t in 1:MTP){
+    Q23=rep(0,NTP)
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if (NLG[i]==GridIndic){
+          if(EXPT[i]>t|EXPT[i]==0){
+            Q23[i]=-1*as.numeric(FUNC1(NLG,EUC,EstAlpha,delta,i,GridIndic,t,BetaCovInf,EstBeta2,alphaT)*AV1(PST,GridIndic))
+          }
+        }
+      }
+    }
+    Q22[t]=sum(Q23)
+  }
+    
+  
+  
+  
+  Q24=rep(0,MTP)
+  for(t in 1:MTP){
+    Q25=rep(0,NTP)
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if(NLG[i]==GridIndic){
+          if(EXPT[i]<=t & (EXPT[i]+INCPR[i])>t & EXPT[i]!=0){
+            
+            Q26=c()
+            for(L in 1:50){
+              Q26[L]=AV2(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L)
+            }
+            
+            
+            Q25[i]=1*as.numeric(FUNC1(NLG,EUC,EstAlpha,delta,i,GridIndic,t,BetaCovInf,EstBeta2,alphaT)*mean(Q26))
+          }
+        }
+      }
+    }
+    Q24[t]=sum(Q25)
+  }
+   
+    
+  
+  Q27=rep(0,MTP)
+  for(t in 1:MTP){
+    Q28=rep(0,NTP)
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if (NLG[i]==GridIndic){
+          if(EXPT[i]<=t & (EXPT[i]+INCPR[i])>t & EXPT[i]!=0){
+            
+            Q29=c()
+            for(L in 1:50){
+              Q29[L]=AV3(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L)
+            }
+            
+            Q28[i]=-1*as.numeric((FUNC1(NLG,EUC,EstAlpha,delta,i,GridIndic,t,BetaCovInf,EstBeta2,alphaT))^2*mean(Q29))
+          }
+        }
+      }
+    }
+    Q27[t]=sum(Q28)
+  }
+    
+    
+  
+  EstAlphaT=alphaT- ((sum(Q22))+(sum(Q24,na.rm=T)))/ (((sum(Q22))+(sum(Q24,na.rm=T)))+ (sum(Q27,na.rm=T)))
+  
+  
+  Q30=array(0,c(DXINF,1,MTP))
+  for(t in 1:MTP){
+    Q31=array(0,c(DXINF,1,NTP))
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if (NLG[i]==GridIndic){
+          if(EXPT[i]>t|EXPT[i]==0){
+            Q31[,,i]=-1*FUNC2(NLG,EUC,EstAlpha,delta,i,GridIndic,t,BetaCovInf,EstBeta2,EstAlphaT)*AV1(PST,GridIndic)
+          }
+        }
+      }
+    }
+    Q30[,,t]=apply(Q31,c(1,2),sum,na.rm=T)
+  }
+    
+  
+  
+  Q32=array(0,c(DXINF,1,MTP))
+  for(t in 1:MTP){
+    Q33=array(0,c(DXINF,1,NTP))
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if(NLG[i]==GridIndic){
+          if(EXPT[i]<=t & (EXPT[i]+INCPR[i])>t & EXPT[i]!=0){
+            
+            
+            Q34=c()
+            for(L in 1:50){
+              Q34[L]=AV2(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L)
+            }
+            
+            Q33[,,i]=1*FUNC2(NLG,EUC,EstAlpha,delta,i,GridIndic,t,BetaCovInf,EstBeta2,EstAlphaT)*as.numeric(mean(Q34))
+          }
+        }
+      }
+    }
+    Q32[,,t]=apply(Q33,c(1,2),sum,na.rm=T)
+  }
+    
+    
+  
+  
+  
+  Q35=array(0,c(DXINF,DXINF,MTP))
+  
+  for(t in 1:MTP){
+    Q36=array(0,c(DXINF,DXINF,NTP))
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if (NLG[i]==GridIndic){
+          if(EXPT[i]>t|EXPT[i]==0){
+            Q36[,,i]=-1*FUNC3(NLG,EUC,EstAlpha,delta,i,GridIndic,t,BetaCovInf,EstBeta2,EstAlphaT)*as.numeric(AV1(PST,GridIndic))
+          }
+        }
+      }
+    }
+    Q35[,,t]=apply(Q36,c(1,2),sum,na.rm=T)
+  }
+    
+  
+  
+  
+  Q37=array(0,c(DXINF,DXINF,MTP))
+  
+  for(t in 1:MTP){
+    Q38=array(0,c(DXINF,DXINF,NTP))
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if(NLG[i]==GridIndic){
+          if(EXPT[i]<=t & (EXPT[i]+INCPR[i])>t & EXPT[i]!=0){
+            
+            Q39=c()
+            for(L in 1:50){
+              Q39[L]=AV2(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L)
+            }
+            
+            
+            Q38[,,i]=1*FUNC3(NLG,EUC,EstAlpha,delta,i,GridIndic,t,BetaCovInf,EstBeta2,EstAlphaT)*as.numeric(mean(Q39))
+          }
+        }
+      }
+    }
+    Q37[,,t]=apply(Q38,c(1,2),sum,na.rm=T)
+  }
+    
+  
+   
+  
+  
+  
+  
+  Q40=array(0,c(DXINF,DXINF,MTP))
+  
+  for(t in 1:MTP){
+    Q41=array(0,c(DXINF,DXINF,NTP))
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if (NLG[i]==GridIndic){
+          if(EXPT[i]<=t & (EXPT[i]+INCPR[i])>t & EXPT[i]!=0){
+            
+            
+            Q42=c()
+            for(L in 1:50){
+              Q42[L]=AV3(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L)
+            }
+            
+            
+            Q41[,,i]=-1*FUNC2(NLG,EUC,EstAlpha,delta,i,GridIndic,t,BetaCovInf,EstBeta2,EstAlphaT)%*%t(FUNC2(NLG,EUC,EstAlpha,delta,i,GridIndic,t,BetaCovInf,EstBeta2,EstAlphaT))*as.numeric(mean(Q42))
+          }
+        }
+      }
+    }
+    Q40[,,t]=apply(Q41,c(1,2),sum,na.rm=T)
+  }
+    
+   
+  
+  EstBeta3=BetaCovInf-solve((((apply(Q35,c(1,2),sum,na.rm=T))+ (apply(Q37,c(1,2),sum,na.rm=T)))+ (apply(Q40,c(1,2),sum,na.rm=T))))%*% ((apply(Q30,c(1,2),sum,na.rm=T))+ (apply(Q32,c(1,2),sum,na.rm=T)))
+  
+  
+  
+  Q43=rep(0,MTP)
+  for(t in 1:MTP){
+    Q44=rep(0,NTP)
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if(NLG[i]==GridIndic){
+          if(EXPT[i]>t|EXPT[i]==0){
+            Q44[i]=1*as.numeric(FUNC4(NLG,EUC,EstAlpha,delta,i,GridIndic,t,EstBeta3,EstBeta2,EstAlphaT)*AV1(PST,GridIndic))
+          }
+        }
+      }
+    }
+    Q43[t]=sum(Q44,na.rm=T)
+  }
+    
+  
+  
+  
+  Q45=rep(0,MTP)
+  for(t in 1:MTP){
+    Q46=rep(0,NTP)
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if(NLG[i]==GridIndic){
+          if(EXPT[i]<=t & (EXPT[i]+INCPR[i])>t & EXPT[i]!=0){
+            
+            
+            Q47=c()
+            for(L in 1:50){
+              Q47[L]=AV2(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L)
+            }
+            
+            
+            Q46[i]=-1*as.numeric(FUNC4(NLG,EUC,EstAlpha,delta,i,GridIndic,t,EstBeta3,EstBeta2,EstAlphaT)*mean(Q47))
+          }
+        }
+      }
+    }
+    Q45[t]=sum(Q46)
+  }
+   
+  
+   
+  
+  
+  Q48=rep(0,MTP)
+  for(t in 1:MTP){
+    Q49=rep(0,NTP)
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if(NLG[i]==GridIndic){
+          if(EXPT[i]>t|EXPT[i]==0){
+            Q49[i]=-1*as.numeric(FUNC5(NLG,EUC,EstAlpha,delta,i,GridIndic,t,EstBeta3,EstBeta2,EstAlphaT)*AV1(PST,GridIndic))
+          }
+        }
+      }
+    }
+    Q48[t]=sum(Q49)
+  }
+    
+  
+  
+  Q50=rep(0,MTP)
+  for(t in 1:MTP){
+    Q51=rep(0,NTP)
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if(NLG[i]==GridIndic){
+          if(EXPT[i]<=t & (EXPT[i]+INCPR[i])>t & EXPT[i]!=0){
+            
+            Q52=c()
+            for(L in 1:50){
+              Q52[L]=AV2(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L)
+            }
+            
+            
+            Q53=c()
+            for(L in 1:50){
+              Q53[L]=AV3(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L)
+            }
+            
+            Q51[i]=1*as.numeric(FUNC5(NLG,EUC,EstAlpha,delta,i,GridIndic,t,EstBeta3,EstBeta2,EstAlphaT)*mean(Q52))-1*as.numeric((FUNC4(NLG,EUC,EstAlpha,delta,i,GridIndic,t,EstBeta3,EstBeta2,EstAlphaT))^2*mean(Q53))
+          }
+        }
+      }
+    }
+    Q50[t]=sum(Q51)
+  }
+    
+  
+    
+  
+  Estdelta=delta-((sum(Q43,na.rm=T))+(sum(Q45,na.rm=T)))/ ((sum(Q48))+ (sum(Q50,na.rm=T)))
+  
+  require(psych)
+  
+  LGK1=function(par){
+    lambda1=par[[1]]
+    sigma1=par[[2]]
+    LGTEMP=c()
+    for(L in 1:50){
+      LGTEMP[L]=dmvnorm(PST[L,], rep(0,NTG), solve(sigma1^2*(as.numeric(lambda1)*D+(1-as.numeric(lambda1))*I)), log = t)
+    }
+     -mean(LGTEMP)
+  }
+  
+    
+    DUM=optim(c(lambda1,sigma1),LGK1)
+  EstU1=DUM$par
+  
+  EstGammau=EstU1[1]
+  HatSigmmaU=EstU1[2]
+  
+  
+  result=list(PST=PST,BetaCovInf=EstBeta3,BetaCovSus=EstBeta2,Uhat=EstU1,alphaS=EstAlpha,alphaT=EstAlphaT,delta=Estdelta,sigma1=HatSigmmaU,lambda1=EstGammau)
+  result
+}
+
+
+
+LGLK=function(NLG,PST1,EUC,alphaS,delta,lambda1,sigma1,BetaCovInf,BetaCovSus,alphaT){
+  
+  
+  AVG1=function(PST1,GridIndic){
+    d1=c()
+    for(L in 1:50){
+      d1[L]=exp(PST1[L,GridIndic])
+    }
+     
+    return(mean(d1))
+  }
+  
+  
+  AVG2=function(NLG,PST1,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L){
+    
+    dx1=rep(0,NTP)
+    for(j in 1:NTP){
+      if (NEWNLG[j,GridIndic]!=0){
+        if(INFECT[j]<=t & (INFECT[j]+INFPR[j])>=t & INFECT[j]!=0){
+          dx1[j]=1*exp(alphaT+XINF[j,]%*%BetaCovInf)*EUC[i,j]^(-delta)
+        }
+      }
+    }
+
+    
+    PR1=1-exp(-1*exp(alphaS+XSUS[GridIndic,]%*%BetaCovSus+PST1[L,GridIndic])*sum(replace(dx1,is.infinite(dx1),0)))
+    
+    if(PR1==0){AVG2s=0}
+    
+    if(PR1!=0){
+      AVG2s=log(PR1)
+    }
+    
+    return(AVG2s)
+  }
+  
+  
+  
+  Q80=rep(0,MTP)
+  for(t in 1:MTP){
+    Q81=rep(0,NTP)
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if (NLG[i]==GridIndic){
+          if(EXPT[i]>t|EXPT[i]==0){
+            Q81[i]=-1*as.numeric(FUNC1(NLG,EUC,alphaS,delta,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT)*AVG1(PST1,GridIndic))
+          }
+        }
+      }
+    }
+    Q80[t]=sum(Q81)
+  }
+    
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  Q82=rep(0,MTP)
+  for(t in 1:MTP){
+    Q83=rep(0,NTP)
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if (NLG[i]==GridIndic){
+          if(EXPT[i]<=t & (EXPT[i]+INCPR[i])>t & EXPT[i]!=0){
+            
+            Q84=c()
+            for(L in 1:50){
+              Q84[L]=AVG2(NLG,PST1,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L)
+            }
+            
+            Q83[i]=as.numeric(mean(Q84))
+          }
+        }
+      }
+    }
+    Q82[t]=sum(Q83)
+  }
+    
+  
+  
+  
+  LGTEMP=c()
+  for(L in 1:50){
+    LGTEMP[L]=dmvnorm(PST1[L,], rep(0,NTG), solve(sigma1^2*(as.numeric(lambda1)*D+(1-as.numeric(lambda1))*I)), log = T)
+  }
+    
+  
+   
+  return(mean(LGTEMP)+ (sum(Q82))+ (sum(Q80)))
+}
+
+
+
+
+
+
+
+
+
+   
+  
+ 
+ESTRES= ESTFN(NLG,EUC,alphaS0,delta0,lambda0,sigma0,BetaCovInf0,BetaCovSus0,alphaT0)
+alphaS=ESTRES$alphaS
+alphaS
+delta=ESTRES$delta
+delta
+lambda1=ESTRES$lambda1
+lambda1
+sigma1=ESTRES$sigma1
+sigma1
+BetaCovInf=ESTRES$BetaCovInf
+BetaCovInf
+BetaCovSus=ESTRES$BetaCovSus
+BetaCovSus
+alphaT=ESTRES$alphaT
+Uhat=ESTRES$Uhat
+PST1=ESTRES$PST
+
+
+
+
+##########################################################################################
+##########################################################################################
+##########################################################################################
+##########################################################################################
+##########################################################################################
+##########################################################################################
+
+
+rm(list = ls())
+require(optimization)
+require(spectralGP)
+require(MASS)
+require(mvtnorm)
+require(maxLik)
+require(psych)
+require(ngspatial)
+require(pracma)
+GD1       <- 30
+GD2       <- 30
+NPPG        <- 500
+NTG       <- GD1^2
+NAllPPG   <- rep(NPPG , NTG)
+NTP       <- sum(NAllPPG)
+MTP      <- 80
+sigma0    <- 0.8
+lambda0   <- 0.5
+alphaS0   <- -5
+delta0    <- 1.5
+alphaT0   <- 0
+make_coords <- function(NPPG , GD1, xrange, yrange) {
+  xmat <- matrix(0, NPPG , GD1)
+  ymat <- matrix(0, NPPG , GD1)
+  for (i in 1:GD1) {
+    xmat[, i] <- runif(NPPG , xrange[1], xrange[2])
+    ymat[, i] <- runif(NPPG , yrange[1] * (i - 1), yrange[2] * i)
+  }
+  list(x = c(xmat), y = c(ymat))
+}
+
+coords1 <- make_coords(NPPG , GD1, c(0, GD2 * 1), c(GD2, GD2))
+coords2 <- make_coords(NPPG , GD1, c(GD2 * 1, GD2 * 2), c(GD2, GD2))
+coords3 <- make_coords(NPPG , GD1, c(GD2 * 2, GD2 * 3), c(GD2, GD2))
+
+xxx <- c(coords1$x, coords2$x, coords3$x)
+yyy <- c(coords1$y, coords2$y, coords3$y)
+
+data <- data.frame(xxx, yyy)
+Lat  <- data[, 1]
+Long <- data[, 2]
+
+I   <- diag(NTG)
+D   <- -1*adjacency.matrix(GD1, GD1)
+diag(D) <- colSums(adjacency.matrix(GD1, GD1))
+
+NLG1 <- lapply(1:NTG, function(i) rep(i, NAllPPG[i]))
+NLG  <- unlist(NLG1)
+
+NEWNLG <- matrix(0, NTP, NTG)
+for (GridIndic in 1:NTG) {
+  NEWNLG[, GridIndic] <- rep(D[, GridIndic], NAllPPG)
+}
+
+EUC <- as.matrix(dist(cbind(Lat, Long)))
+
+Sigma0 <- solve(sigma0^2 * (lambda0 * D + (1 - lambda0) * I))
+phi    <- mvrnorm(1, rep(0, NTG), Sigma0, tol = 1e-6)
+
+XSUS <- cbind(rnorm(NTG, 0, 1), runif(NTG, 0, 1))
+XINF <- cbind(rnorm(NTP, 0, 1), runif(NTP, 0, 1))
+
+DXINF <- ncol(XINF)
+DXSUS <- ncol(XSUS)
+
+BetaCovInf0 <- rep(1, DXINF)
+BetaCovSus0 <- rep(1, DXSUS)
+
+D1 <- sapply(1:NTG, function(GridIndic) sample(NAllPPG[GridIndic], 1, replace = FALSE))
+
+EXPT1 <- lapply(1:NTG, function(i) {
+  v <- rep(0, NAllPPG[i])
+  v[D1[i]] <- 1
+  v
+})
+
+EXPT <- unlist(EXPT1)
+
+INFPR  <- rep(3, NTP)
+INCPR  <- rep(3,  NTP)
+INCPR1 <- INCPR[1]  
+
+INFECT <- ifelse(EXPT > 0, EXPT + INCPR1, EXPT)
+
+for (t in 1:MTP) {
+  for (i in 1:NTP) {
+    for (GridIndic in 1:NTG) {
+      if (NLG[i] == GridIndic && INFECT[i] == 0) {
+        
+        InfForc <- rep(0, NTP)
+        for (j in 1:NTP) {
+          if (NEWNLG[j, GridIndic] != 0 &&
+              INFECT[j] <= t &&
+              (INFECT[j] + INFPR[j]) >= t &&
+              INFECT[j] != 0) {
+            InfForc[j] <- exp(alphaT0 + XINF[j, ] %*% BetaCovInf0) *
+              exp(EUC[i, j] * (-delta0))
+          }
+        }
+        
+        InfForc <- replace(InfForc, is.infinite(InfForc), 0)
+        SInfForc <- sum(InfForc)
+        
+        if ((1 - exp(-exp(alphaS0 + XSUS[GridIndic, ] %*% BetaCovSus0 + phi[GridIndic]) * SInfForc))>(runif(1))) {
+          INFECT[i] <- t + 1
+        }
+      }
+    }
+  }
+}
+
+EXPT <- INFECT - INCPR1
+
+NUMinf  <- numeric(MTP)
+for (t in 1:MTP) {
+  NUMinf [t] <- sum(INFECT <= t & (INFECT + INFPR - 1) >= t)
+}
+
+#plot(1:MTP, NUMinf , type = "o", col = "red", lwd = 2,
+ #    xlab = "Time (t)", ylab = "Number of Infected",
+#     main = "Number of Infectious Individuals Over Time")
+#grid()
+
+INFlist <- vector("list", MTP)
+
+for (t in 1:MTP) {
+  ids <- which(INFECT != 0 & INFECT <= t & (INFECT + INFPR) >= t)
+  
+  if (length(ids) > 0) {
+    INFlist[[t]] <- data.frame(
+      id    = ids,
+      lat   = Lat[ids],
+      long  = Long[ids],
+      grid  = NLG[ids],
+      time  = t
+    )
+  } else {
+    INFlist[[t]] <- data.frame(
+      id    = integer(0),
+      lat   = numeric(0),
+      long  = numeric(0),
+      grid  = integer(0),
+      time  = integer(0)
+    )
+  }
+}
+
+
+INFDATA <- do.call(rbind, INFlist)
+
+#head(INFDATA)
+#View(INFDATA)
+
+
+INFTEDlist <- vector("list", MTP)
+
+for (t in 1:MTP) {
+  ids <- which(INFECT == t)
+  
+  if (length(ids) > 0) {
+    INFTEDlist[[t]] <- data.frame(
+      id    = ids,
+      lat   = Lat[ids],
+      long  = Long[ids],
+      grid  = NLG[ids],
+      time  = t
+    )
+  } else {
+    INFTEDlist[[t]] <- data.frame(
+      id    = integer(0),
+      lat   = numeric(0),
+      long  = numeric(0),
+      grid  = integer(0),
+      time  = integer(0)
+    )
+  }
+}
+
+INFTEDDATA <- do.call(rbind, INFTEDlist)
+
+#head(INFTEDDATA)
+#View(INFTEDDATA)
+
+
+NEWINFTED <- numeric(MTP)
+
+for (t in 1:MTP) {
+  NEWINFTED[t] <- sum(INFECT == t)
+}
+
+#plot(1:MTP, NEWINFTED, type = "o", col = "darkgreen", lwd = 2,
+#     xlab = "Time (t)", ylab = "Number of Newly Infected",
+ #    main = "Number of Newly Infected Individuals Over Time")
+#grid()
+
+SILBND <- function(x) {
+  n  <- length(x)
+  sd_x <- sd(x)
+  iqr_x <- IQR(x)
+  sigma <- min(sd_x, iqr_x / 1.34)
+  hs <- 1.06 * sigma * n^(-1/5)
+  return(hs)
+}
+
+hs_lat  <- SILBND(INFDATA$lat)
+hs_long <- SILBND(INFDATA$long)
+hs <- sqrt(hs_lat * hs_long)  
+
+rho  <- INFPR[1]    
+eps    <- 0.05    
+n_max  <- 10    
+xi     <- 0.7     
+
+SILBND <- function(x) {
+  n  <- length(x)
+  sd_x <- sd(x)
+  iqr_x <- IQR(x)
+  sigma <- min(sd_x, iqr_x / 1.34)
+  hs <- 1.06 * sigma * n^(-1/5)
+  return(hs)
+}
+
+hs_lat  <- SILBND(INFDATA$lat)
+hs_long <- SILBND(INFDATA$long)
+hs <- sqrt(hs_lat * hs_long) 
+
+eta <- function(dt, rho, eps) {
+  w <- exp((log(eps)/rho) * dt)
+  w[(dt < 0) | (dt > rho)] <- 0
+  return(w)
+}
+
+
+TWKDE <- function(x, y, data, hs, rho, eps, current_time) {
+  dt  <- current_time - data$onset
+  wt  <- eta(dt, rho, eps)
+  if (sum(wt) == 0) return(0)
+  
+  KER <- exp(-((x - data$lat)^2 + (y - data$long)^2)/(2*hs^2))
+  num <- sum(wt * KER)
+  den <- 2 * pi * hs^2 * sum(wt)
+  return(num / den)
+}
+
+
+Tmax <- max(INFDATA$time)
+SAMPRES <- list()
+IPERSIST <- data.frame()  
+
+for (t in 1:Tmax) {
+  
+  
+  IPERSIST <- subset(INFTEDDATA, time < t & time + rho - 1 >= t)
+  
+  INEW <- subset(INFTEDDATA, time == t)
+  
+  IFULL <- rbind(IPERSIST, INEW)
+  
+  if(nrow(INEW)>=n_max){
+    
+    n_s <- min(ceiling(xi * nrow(INEW)))
+    n_new=n_s
+    
+    dt  <- t - INFECT[IFULL$id]
+    wt  <- eta(dt, rho, eps)
+    if (sum(wt) == 0) return(0)
+    
+    kernel=rep(0,nrow(IFULL))
+    KER=rep(0,nrow(INEW))
+    for(j in 1:nrow(INEW)){
+      for(i in 1:nrow(IFULL)){
+        kernel[i]=(wt[i]*exp(-((INEW$lat[j]-IFULL$lat[i])^2+(INEW$long[j]-IFULL$long[i])^2)/(2*hs^2)))
+      }
+      KER[j]=sum(kernel)/(2*pi*hs^2*sum(wt))
+    }
+    
+    
+    PROB <- KER / sum(KER)
+    
+    SAMPIDX <- sample(1:nrow(INEW), size = n_new,
+                         prob = PROB, replace = FALSE)
+    IPPS <- INEW[SAMPIDX, ]
+  } else {
+    IPPS <- data.frame()
+  }
+  
+  
+  if(nrow(IPPS) > 0){
+    
+    INFTEDDATA <- INFTEDDATA[INFTEDDATA$time != t, ]
+    INFTEDDATA <- rbind(INFTEDDATA, IPPS)
+    
+  }
+  
+  
+}
+
+
+NEWINFTEDSAMP<- numeric(MTP)
+for (t in 1:MTP) {
+  
+  NEWINFTEDSAMP[t] <- sum( INFTEDDATA$time == t)
+}
+
+#plot(1:MTP, NEWINFTEDSAMP, type = "o", col = "darkgreen", lwd = 2,
+ #    xlab = "Time (t)", ylab = "Number of Newly Infected",
+ #    main = "Number of Newly Infected Individuals Over Time")
+
+NEWINFTED <- numeric(MTP)
+
+for (t in 1:MTP) {
+  NEWINFTED[t] <- sum(INFECT == t)
+}
+
+#plot(1:MTP, NEWINFTED, type = "o", col = "darkgreen", lwd = 2,
+ #    xlab = "Time (t)", ylab = "Number of Newly Infected",
+ #    main = "Number of Newly Infected Individuals Over Time")
+#y_max <- max(c(NEWINFTEDSAMP, NEWINFTED))
+
+
+#plot(1:MTP, NEWINFTEDSAMP, type = "o", col = "darkgreen", lwd = 2,
+ #    xlab = "Time (t)", ylab = "Number of Newly Infected",
+ #    main = "Number of Newly Infected Individuals Over Time",
+ #    ylim = c(0, y_max))
+
+#lines(1:MTP, NEWINFTED, type = "o", col = "blue", lwd = 2)
+
+EXPT <- rep(0, length(INFECT))
+
+EXPT[INFTEDDATA$id] <- INFTEDDATA$time
+EXPT <- EXPT - INCPR1
+
+#EXPT
+
+FUNC1=function(NLG,EUC,alphaS,delta,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT){
+  
+  FUNC11=rep(0,NTP)
+  for(j in 1:NTP){
+    if (NEWNLG[j,GridIndic]!=0){
+      if(INFECT[j]<=t & (INFECT[j]+INFPR[j])>=t & INFECT[j]!=0){
+        FUNC11[j]=1*exp(alphaT+XINF[j,]%*%BetaCovInf)*EUC[i,j]^(-delta)
+      }
+    }
+  }
+  
+  FUNC111=exp(alphaS+XSUS[GridIndic,]%*%BetaCovSus)*sum(replace(FUNC11,is.infinite(FUNC11),0))
+  
+  return(FUNC111)
+}
+
+
+FUNC2=function(NLG,EUC,alphaS,delta,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT){
+  
+  FUNC22=array(0,c(DXINF,1,NTP))
+  for(j in 1:NTP){
+    if (NEWNLG[j,GridIndic]!=0){
+      if(INFECT[j]<=t & (INFECT[j]+INFPR[j])>=t & INFECT[j]!=0){
+        FUNC22[,,j]=1*XINF[j,]*as.numeric(exp(alphaT+XINF[j,]%*%BetaCovInf))*EUC[i,j]^(-delta)
+      }
+    }
+  }
+  FUNC22[!is.finite(FUNC22)]=NA
+  
+  return(apply(FUNC22,c(1,2),sum,na.rm=T)*as.numeric(exp(alphaS+XSUS[GridIndic,]%*%BetaCovSus)))
+}
+
+FUNC3=function(NLG,EUC,alphaS,delta,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT){
+  
+  FUNC33=array(0,c(DXINF,DXINF,NTP))
+  for(j in 1:NTP){
+    if (NEWNLG[j,GridIndic]!=0){
+      if(INFECT[j]<=t & (INFECT[j]+INFPR[j])>=t & INFECT[j]!=0){
+        FUNC33[,,j]=1*XINF[j,]%*%t(XINF[j,])*as.numeric(exp(alphaT+XINF[j,]%*%BetaCovInf))*EUC[i,j]^(-delta)
+      }
+    }
+  }
+  FUNC33[!is.finite(FUNC33)]=NA
+  
+  return(apply(FUNC33,c(1,2),sum,na.rm=T)*as.numeric(exp(alphaS+XSUS[GridIndic,]%*%BetaCovSus)))
+}
+
+
+FUNC4=function(NLG,EUC,alphaS,delta,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT){
+  
+  FUNC44=rep(0,NTP)
+  for(j in 1:NTP){
+    if (NEWNLG[j,GridIndic]!=0){
+      if(INFECT[j]<=t & (INFECT[j]+INFPR[j])>=t & INFECT[j]!=0){
+        FUNC44[j]=1*exp(alphaT+XINF[j,]%*%BetaCovInf)*EUC[i,j]^(-delta)*(log(EUC[i,j]))
+      }
+    }
+  }
+  
+  
+  FUNC444=exp(alphaS+XSUS[GridIndic,]%*%BetaCovSus)*sum(replace(FUNC44,is.infinite(FUNC44),0))
+  
+  return(FUNC444)
+}
+
+
+FUNC5=function(NLG,EUC,alphaS,delta,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT){
+  
+  FUNC55=rep(0,NTP)
+  for(j in 1:NTP){
+    if (NEWNLG[j,GridIndic]!=0){
+      if(INFECT[j]<=t & (INFECT[j]+INFPR[j])>=t & INFECT[j]!=0){
+        FUNC55[j]=1*exp(alphaT+XINF[j,]%*%BetaCovInf)*EUC[i,j]^(-delta)*(log(EUC[i,j]))^2
+      }
+    }
+  }
+  
+  FUNC555=exp(alphaS+XSUS[GridIndic,]%*%BetaCovSus)*sum(replace(FUNC55,is.infinite(FUNC55),0))
+  
+  return(FUNC555)
+}
+
+FUNC6=function(phi,alphaS,delta,lambda1,sigma1,BetaCovInf,BetaCovSus,alphaT){
+  
+  FUNC7=array(0,c(NTP,MTP,NTG))
+  for(i in 1:NTP){
+    for(t in 1:MTP){
+      for(GridIndic in 1:NTG){
+        if(NLG[i]==GridIndic){
+          if(EXPT[i]>t|EXPT[i]==0){
+            
+            
+            dx1=rep(0,NTP)
+            for(j in 1:NTP){
+              if (NEWNLG[j,GridIndic]!=0){
+                if(INFECT[j]<=t & (INFECT[j]+INFPR[j])>=t & INFECT[j]!=0){
+                  dx1[j]=1*exp(alphaT+XINF[j,]%*%BetaCovInf)*EUC[i,j]^(-delta)
+                }
+              }
+            }
+            
+            
+            PR1=1-exp(-1*exp(alphaS+XSUS[GridIndic,]%*%BetaCovSus+phi[GridIndic])*sum(replace(dx1,is.infinite(dx1),0)))
+            
+            
+            FUNC7[i,t,GridIndic]=(1-PR1)
+            
+            
+          }
+          
+          if(EXPT[i]<=t & (EXPT[i]+INCPR[i])>t & EXPT[i]!=0){
+            
+            dx4=rep(0,NTP)
+            for(j in 1:NTP){
+              if (NEWNLG[j,GridIndic]!=0){
+                if(INFECT[j]<=t & (INFECT[j]+INFPR[j])>=t & INFECT[j]!=0){
+                  dx4[j]=1*exp(alphaT+XINF[j,]%*%BetaCovInf)*EUC[i,j]^(-delta)
+                }
+              }
+            }
+            
+            PR2=1-exp(-1*exp(alphaS+XSUS[GridIndic,]%*%BetaCovSus+phi[GridIndic])*sum(replace(dx4,is.infinite(dx4),0)))
+            
+            
+            FUNC7[i,t,GridIndic]=(PR2)
+            
+          }
+        }
+      }
+    }
+  }
+  
+  FUNC8=c()
+  FUNC9=list()
+  FUNC10=c()
+  for(GridIndic in 1:NTG){
+    for(i in 1:NTP){
+      FUNC8[i]=round(prod(FUNC7[i,,GridIndic][FUNC7[i,,GridIndic]>0]),10)
+    }
+    FUNC9[[GridIndic]]=which(FUNC8!=1)
+    FUNC10[GridIndic]=prod(FUNC8[FUNC9[[GridIndic]]][FUNC8[FUNC9[[GridIndic]]]>0])
+  }
+  return(FUNC10)
+}
+
+
+
+
+
+alphaS=alphaS0
+delta=delta0
+sigma1=sigma0
+lambda1=lambda0
+BetaCovInf=BetaCovInf0
+BetaCovSus=BetaCovSus0
+alphaT=alphaT0
+
+
+ ESTFN=function(NLG,EUC,alphaS,delta,lambda1,sigma1,BetaCovInf,BetaCovSus,alphaT){
+  
+  
+  
+  PST=matrix(0,2+1,NTG)
+
+  Sigma1=solve(sigma1^2*(lambda1*D+(1-lambda1)*I))
+  phi0=mvrnorm(1, rep(0,NTG), Sigma1, tol = 1e-6)
+  
+  PST[1,]=phi0
+  
+  gamma_seq <- 1 / (1:2)^0.6
+  
+  for (L in 2:2) {
+    phi <- mvrnorm(1, rep(0, NTG), solve(Sigma1^2 * (lambda1 * D + (1 - lambda1) * I)), tol = 1e-6)
+    grad_phi <- FUNC6(PST[L - 1, ], alphaS, delta,
+                    lambda1, Sigma1, BetaCovInf, BetaCovSus, alphaT)
+    
+    
+    PST[L, ] <- PST[L - 1, ] + gamma_seq[L] * (grad_phi)
+  }
+  
+  
+  AV1=function(PST,GridIndic){
+    d1=c()
+    for(L in 1:2){
+      d1[L]=exp(PST[L,GridIndic])
+    }
+    return(mean(d1))
+  }
+  
+  
+  AV2=function(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L){
+    
+    
+    dx1=rep(0,NTP)
+    for(j in 1:NTP){
+      if (NEWNLG[j,GridIndic]!=0){
+        if(INFECT[j]<=t & (INFECT[j]+INFPR[j])>=t & INFECT[j]!=0){
+          dx1[j]=1*exp(alphaT+XINF[j,]%*%BetaCovInf)*EUC[i,j]^(-delta)
+        }
+      }
+    }
+    
+    PR1=1-exp(-1*exp(alphaS+XSUS[GridIndic,]%*%BetaCovSus+PST[L,GridIndic])*sum(replace(dx1,is.infinite(dx1),0)))
+    
+    if(PR1==0){AV2s=0}
+    
+    if(PR1!=0){
+      AV2s=(1-PR1)/PR1*exp(PST[L,GridIndic])
+    }
+    
+    return(AV2s)
+  }
+  
+  
+  
+  
+  AV3=function(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L){
+    
+    
+    
+    dx1=rep(0,NTP)
+    for(j in 1:NTP){
+      if (NEWNLG[j,GridIndic]!=0){
+        if(INFECT[j]<=t & (INFECT[j]+INFPR[j])>=t & INFECT[j]!=0){
+          dx1[j]=1*exp(alphaT+XINF[j,]%*%BetaCovInf)*EUC[i,j]^(-delta)
+        }
+      }
+    }
+    
+    PR1=1-exp(-1*exp(alphaS+XSUS[GridIndic,]%*%BetaCovSus+PST[L,GridIndic])*sum(replace(dx1,is.infinite(dx1),0)))
+    
+    if(PR1==0){AV3s=0}
+    
+    if(PR1!=0){
+      AV3s=(1-PR1)/PR1^2*exp(2*PST[L,GridIndic])
+    }
+    
+    return(AV3s)
+  }
+  
+  
+  Q1=rep(0,MTP)
+  for(t in 1:MTP){
+    Q2=rep(0,NTP)
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if (NLG[i]==GridIndic){
+          if(EXPT[i]>t|EXPT[i]==0){
+            Q2[i]=-1*as.numeric(FUNC1(NLG,EUC,alphaS,delta,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT)*AV1(PST,GridIndic))
+          }
+        }
+      }
+    }
+    Q1[t]=sum(Q2)
+  }
+  
+  
+  
+  Q3=rep(0,MTP)
+  for(t in 1:MTP){
+    Q4=rep(0,NTP)
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if(NLG[i]==GridIndic){
+          if(EXPT[i]<=t & (EXPT[i]+INCPR[i])>t & EXPT[i]!=0){
+            
+            Q5=c()
+            for(L in 1:2){
+              Q5[L]=AV2(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L)
+            }
+            
+            Q4[i]=1*as.numeric(FUNC1(NLG,EUC,alphaS,delta,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT)*mean(Q5))
+          }
+        }
+      }
+    }
+    Q3[t]=sum(Q4)
+  }
+  
+  
+  Q6=rep(0,MTP)
+  for(t in 1:MTP){
+    Q7=rep(0,NTP)
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if (NLG[i]==GridIndic){
+          if(EXPT[i]<=t & (EXPT[i]+INCPR[i])>t & EXPT[i]!=0){
+            
+            
+            Q8=c()
+            for(L in 1:2){
+              Q8[L]=AV3(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L)
+            }
+            
+            Q7[i]=-1*as.numeric((FUNC1(NLG,EUC,alphaS,delta,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT))^2*mean(Q8))
+          }
+        }
+      }
+    }
+    Q6[t]=sum(Q7)
+  }
+  
+  
+  EstAlpha=alphaS-(sum(Q1)+sum(Q3,na.rm=T))/(sum(Q1)+sum(Q3,na.rm=T)+sum(Q6,na.rm=T))
+  
+  
+  
+  Q9=array(0,c(DXSUS,1,MTP))
+  
+  for(t in 1:MTP){
+    Q10=array(0,c(DXSUS,1,NTP))
+    
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if (NLG[i]==GridIndic){
+          if(EXPT[i]>t|EXPT[i]==0){
+            Q10[,,i]=-1*XSUS[GridIndic,]*as.numeric(FUNC1(NLG,EUC,EstAlpha,delta,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT)*AV1(PST,GridIndic))
+          }
+        }
+      }
+    }
+    Q9[,,t]=apply(Q10,c(1,2),sum)
+    
+  }
+   
+  
+  
+  
+  Q11=array(0,c(DXSUS,1,MTP))
+  
+  for(t in 1:MTP){
+    Q12=array(0,c(DXSUS,1,NTP))
+    
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if(NLG[i]==GridIndic){
+          if(EXPT[i]<=t & (EXPT[i]+INCPR[i])>t & EXPT[i]!=0){
+            
+            
+            Q13=c()
+            for(L in 1:2){
+              Q13[L]=AV2(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L)
+            }
+            
+            Q12[,,i]=1*XSUS[GridIndic,]*as.numeric(FUNC1(NLG,EUC,EstAlpha,delta,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT)*mean(Q13))
+          }
+        }
+      }
+    }
+    Q11[,,t]=apply(Q12,c(1,2),sum,na.rm=T)
+    
+  }
+    
+  
+    
+  
+  
+  Q14=array(0,c(DXSUS,DXSUS,MTP))
+  
+  for(t in 1:MTP){
+    Q15=array(0,c(DXSUS,DXSUS,NTP))
+    
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if (NLG[i]==GridIndic){
+          if(EXPT[i]>t|EXPT[i]==0){
+            Q15[,,i]=-1*XSUS[GridIndic,]%*%t(XSUS[GridIndic,])*as.numeric(FUNC1(NLG,EUC,EstAlpha,delta,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT)*AV1(PST,GridIndic))
+          }
+        }
+      }
+    }
+    Q14[,,t]=apply(Q15,c(1,2),sum)
+    
+  }
+    
+  
+  
+  
+  Q16=array(0,c(DXSUS,DXSUS,MTP))
+  
+  for(t in 1:MTP){
+    Q17=array(0,c(DXSUS,DXSUS,NTP))
+    
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if(NLG[i]==GridIndic){
+          if(EXPT[i]<=t & (EXPT[i]+INCPR[i])>t & EXPT[i]!=0){
+            
+            Q18=c()
+            for(L in 1:2){
+              Q18[L]=AV2(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L)
+            }
+            
+            
+            Q17[,,i]=1*XSUS[GridIndic,]%*%t(XSUS[GridIndic,])*as.numeric(FUNC1(NLG,EUC,EstAlpha,delta,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT)*mean(Q18))
+          }
+        }
+      }
+    }
+    Q16[,,t]=apply(Q17,c(1,2),sum)
+    
+  }
+   
+  
+  
+  
+  
+  
+  Q19=array(0,c(DXSUS,DXSUS,MTP))
+  
+  for(t in 1:MTP){
+    Q20=array(0,c(DXSUS,DXSUS,NTP))
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if (NLG[i]==GridIndic){
+          if(EXPT[i]<=t & (EXPT[i]+INCPR[i])>t & EXPT[i]!=0){
+            
+            Q21=c()
+            for(L in 1:2){
+              Q21[L]=AV3(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L)
+            }
+            
+            Q20[,,i]=-1*XSUS[GridIndic,]%*%t(XSUS[GridIndic,])*as.numeric((FUNC1(NLG,EUC,EstAlpha,delta,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT))^2*mean(Q21))
+          }
+        }
+      }
+    }
+    Q19[,,t]=apply(Q20,c(1,2),sum,na.rm=T)
+    
+  }
+    
+  
+   
+  
+  EstBeta2=BetaCovSus-solve(((apply(Q14,c(1,2),sum))+(apply(Q16,c(1,2),sum,na.rm=T))+ (apply(Q19,c(1,2),sum))) )%*% ((apply(Q9,c(1,2),sum))+ (apply(Q11,c(1,2),sum)))
+  
+  
+  
+  Q22=rep(0,MTP)
+  for(t in 1:MTP){
+    Q23=rep(0,NTP)
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if (NLG[i]==GridIndic){
+          if(EXPT[i]>t|EXPT[i]==0){
+            Q23[i]=-1*as.numeric(FUNC1(NLG,EUC,EstAlpha,delta,i,GridIndic,t,BetaCovInf,EstBeta2,alphaT)*AV1(PST,GridIndic))
+          }
+        }
+      }
+    }
+    Q22[t]=sum(Q23)
+  }
+    
+  
+  
+  
+  Q24=rep(0,MTP)
+  for(t in 1:MTP){
+    Q25=rep(0,NTP)
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if(NLG[i]==GridIndic){
+          if(EXPT[i]<=t & (EXPT[i]+INCPR[i])>t & EXPT[i]!=0){
+            
+            Q26=c()
+            for(L in 1:2){
+              Q26[L]=AV2(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L)
+            }
+            
+            
+            Q25[i]=1*as.numeric(FUNC1(NLG,EUC,EstAlpha,delta,i,GridIndic,t,BetaCovInf,EstBeta2,alphaT)*mean(Q26))
+          }
+        }
+      }
+    }
+    Q24[t]=sum(Q25)
+  }
+   
+    
+  
+  Q27=rep(0,MTP)
+  for(t in 1:MTP){
+    Q28=rep(0,NTP)
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if (NLG[i]==GridIndic){
+          if(EXPT[i]<=t & (EXPT[i]+INCPR[i])>t & EXPT[i]!=0){
+            
+            Q29=c()
+            for(L in 1:2){
+              Q29[L]=AV3(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L)
+            }
+            
+            Q28[i]=-1*as.numeric((FUNC1(NLG,EUC,EstAlpha,delta,i,GridIndic,t,BetaCovInf,EstBeta2,alphaT))^2*mean(Q29))
+          }
+        }
+      }
+    }
+    Q27[t]=sum(Q28)
+  }
+    
+    
+  
+  EstAlphaT=alphaT- ((sum(Q22))+(sum(Q24,na.rm=T)))/ (((sum(Q22))+(sum(Q24,na.rm=T)))+ (sum(Q27,na.rm=T)))
+  
+  
+  Q30=array(0,c(DXINF,1,MTP))
+  for(t in 1:MTP){
+    Q31=array(0,c(DXINF,1,NTP))
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if (NLG[i]==GridIndic){
+          if(EXPT[i]>t|EXPT[i]==0){
+            Q31[,,i]=-1*FUNC2(NLG,EUC,EstAlpha,delta,i,GridIndic,t,BetaCovInf,EstBeta2,EstAlphaT)*AV1(PST,GridIndic)
+          }
+        }
+      }
+    }
+    Q30[,,t]=apply(Q31,c(1,2),sum,na.rm=T)
+  }
+    
+  
+  
+  Q32=array(0,c(DXINF,1,MTP))
+  for(t in 1:MTP){
+    Q33=array(0,c(DXINF,1,NTP))
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if(NLG[i]==GridIndic){
+          if(EXPT[i]<=t & (EXPT[i]+INCPR[i])>t & EXPT[i]!=0){
+            
+            
+            Q34=c()
+            for(L in 1:2){
+              Q34[L]=AV2(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L)
+            }
+            
+            Q33[,,i]=1*FUNC2(NLG,EUC,EstAlpha,delta,i,GridIndic,t,BetaCovInf,EstBeta2,EstAlphaT)*as.numeric(mean(Q34))
+          }
+        }
+      }
+    }
+    Q32[,,t]=apply(Q33,c(1,2),sum,na.rm=T)
+  }
+    
+    
+  
+  
+  
+  Q35=array(0,c(DXINF,DXINF,MTP))
+  
+  for(t in 1:MTP){
+    Q36=array(0,c(DXINF,DXINF,NTP))
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if (NLG[i]==GridIndic){
+          if(EXPT[i]>t|EXPT[i]==0){
+            Q36[,,i]=-1*FUNC3(NLG,EUC,EstAlpha,delta,i,GridIndic,t,BetaCovInf,EstBeta2,EstAlphaT)*as.numeric(AV1(PST,GridIndic))
+          }
+        }
+      }
+    }
+    Q35[,,t]=apply(Q36,c(1,2),sum,na.rm=T)
+  }
+    
+  
+  
+  
+  Q37=array(0,c(DXINF,DXINF,MTP))
+  
+  for(t in 1:MTP){
+    Q38=array(0,c(DXINF,DXINF,NTP))
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if(NLG[i]==GridIndic){
+          if(EXPT[i]<=t & (EXPT[i]+INCPR[i])>t & EXPT[i]!=0){
+            
+            Q39=c()
+            for(L in 1:2){
+              Q39[L]=AV2(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L)
+            }
+            
+            
+            Q38[,,i]=1*FUNC3(NLG,EUC,EstAlpha,delta,i,GridIndic,t,BetaCovInf,EstBeta2,EstAlphaT)*as.numeric(mean(Q39))
+          }
+        }
+      }
+    }
+    Q37[,,t]=apply(Q38,c(1,2),sum,na.rm=T)
+  }
+    
+  
+   
+  
+  
+  
+  
+  Q40=array(0,c(DXINF,DXINF,MTP))
+  
+  for(t in 1:MTP){
+    Q41=array(0,c(DXINF,DXINF,NTP))
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if (NLG[i]==GridIndic){
+          if(EXPT[i]<=t & (EXPT[i]+INCPR[i])>t & EXPT[i]!=0){
+            
+            
+            Q42=c()
+            for(L in 1:2){
+              Q42[L]=AV3(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L)
+            }
+            
+            
+            Q41[,,i]=-1*FUNC2(NLG,EUC,EstAlpha,delta,i,GridIndic,t,BetaCovInf,EstBeta2,EstAlphaT)%*%t(FUNC2(NLG,EUC,EstAlpha,delta,i,GridIndic,t,BetaCovInf,EstBeta2,EstAlphaT))*as.numeric(mean(Q42))
+          }
+        }
+      }
+    }
+    Q40[,,t]=apply(Q41,c(1,2),sum,na.rm=T)
+  }
+    
+   
+  
+  EstBeta3=BetaCovInf-solve((((apply(Q35,c(1,2),sum,na.rm=T))+ (apply(Q37,c(1,2),sum,na.rm=T)))+ (apply(Q40,c(1,2),sum,na.rm=T))))%*% ((apply(Q30,c(1,2),sum,na.rm=T))+ (apply(Q32,c(1,2),sum,na.rm=T)))
+  
+  
+  
+  Q43=rep(0,MTP)
+  for(t in 1:MTP){
+    Q44=rep(0,NTP)
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if(NLG[i]==GridIndic){
+          if(EXPT[i]>t|EXPT[i]==0){
+            Q44[i]=1*as.numeric(FUNC4(NLG,EUC,EstAlpha,delta,i,GridIndic,t,EstBeta3,EstBeta2,EstAlphaT)*AV1(PST,GridIndic))
+          }
+        }
+      }
+    }
+    Q43[t]=sum(Q44,na.rm=T)
+  }
+    
+  
+  
+  
+  Q45=rep(0,MTP)
+  for(t in 1:MTP){
+    Q46=rep(0,NTP)
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if(NLG[i]==GridIndic){
+          if(EXPT[i]<=t & (EXPT[i]+INCPR[i])>t & EXPT[i]!=0){
+            
+            
+            Q47=c()
+            for(L in 1:2){
+              Q47[L]=AV2(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L)
+            }
+            
+            
+            Q46[i]=-1*as.numeric(FUNC4(NLG,EUC,EstAlpha,delta,i,GridIndic,t,EstBeta3,EstBeta2,EstAlphaT)*mean(Q47))
+          }
+        }
+      }
+    }
+    Q45[t]=sum(Q46)
+  }
+   
+  
+   
+  
+  
+  Q48=rep(0,MTP)
+  for(t in 1:MTP){
+    Q49=rep(0,NTP)
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if(NLG[i]==GridIndic){
+          if(EXPT[i]>t|EXPT[i]==0){
+            Q49[i]=-1*as.numeric(FUNC5(NLG,EUC,EstAlpha,delta,i,GridIndic,t,EstBeta3,EstBeta2,EstAlphaT)*AV1(PST,GridIndic))
+          }
+        }
+      }
+    }
+    Q48[t]=sum(Q49)
+  }
+    
+  
+  
+  Q50=rep(0,MTP)
+  for(t in 1:MTP){
+    Q51=rep(0,NTP)
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if(NLG[i]==GridIndic){
+          if(EXPT[i]<=t & (EXPT[i]+INCPR[i])>t & EXPT[i]!=0){
+            
+            Q52=c()
+            for(L in 1:2){
+              Q52[L]=AV2(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L)
+            }
+            
+            
+            Q53=c()
+            for(L in 1:2){
+              Q53[L]=AV3(NLG,PST,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L)
+            }
+            
+            Q51[i]=1*as.numeric(FUNC5(NLG,EUC,EstAlpha,delta,i,GridIndic,t,EstBeta3,EstBeta2,EstAlphaT)*mean(Q52))-1*as.numeric((FUNC4(NLG,EUC,EstAlpha,delta,i,GridIndic,t,EstBeta3,EstBeta2,EstAlphaT))^2*mean(Q53))
+          }
+        }
+      }
+    }
+    Q50[t]=sum(Q51)
+  }
+    
+  
+    
+  
+  Estdelta=delta-((sum(Q43,na.rm=T))+(sum(Q45,na.rm=T)))/ ((sum(Q48))+ (sum(Q50,na.rm=T)))
+  
+  require(psych)
+  
+  LGK1=function(par){
+    lambda1=par[[1]]
+    sigma1=par[[2]]
+    LGTEMP=c()
+    for(L in 1:2){
+      LGTEMP[L]=dmvnorm(PST[L,], rep(0,NTG), solve(sigma1^2*(as.numeric(lambda1)*D+(1-as.numeric(lambda1))*I)))
+    }
+     -mean(LGTEMP)
+  }
+  
+    
+    DUM=optim(c(lambda1,sigma1),LGK1)
+  EstU1=DUM$par
+  
+  EstGammau=EstU1[1]
+  HatSigmmaU=EstU1[2]
+  
+  
+  result=list(PST=PST,BetaCovInf=EstBeta3,BetaCovSus=EstBeta2,Uhat=EstU1,alphaS=EstAlpha,alphaT=EstAlphaT,delta=Estdelta,sigma1=HatSigmmaU,lambda1=EstGammau)
+  result
+}
+
+
+
+LGLK=function(NLG,PST1,EUC,alphaS,delta,lambda1,sigma1,BetaCovInf,BetaCovSus,alphaT){
+  
+  
+  AVG1=function(PST1,GridIndic){
+    d1=c()
+    for(L in 1:2){
+      d1[L]=exp(PST1[L,GridIndic])
+    }
+     
+    return(mean(d1))
+  }
+  
+  
+  AVG2=function(NLG,PST1,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L){
+    
+    dx1=rep(0,NTP)
+    for(j in 1:NTP){
+      if (NEWNLG[j,GridIndic]!=0){
+        if(INFECT[j]<=t & (INFECT[j]+INFPR[j])>=t & INFECT[j]!=0){
+          dx1[j]=1*exp(alphaT+XINF[j,]%*%BetaCovInf)*EUC[i,j]^(-delta)
+        }
+      }
+    }
+    
+    PR1=1-exp(-1*exp(alphaS+XSUS[GridIndic,]%*%BetaCovSus+PST1[L,GridIndic])*sum(replace(dx1,is.infinite(dx1),0)))
+    
+    if(PR1==0){AVG2s=0}
+    
+    if(PR1!=0){
+      AVG2s=log(PR1)
+    }
+    
+    return(AVG2s)
+  }
+  
+  
+  
+  Q80=rep(0,MTP)
+  for(t in 1:MTP){
+    Q81=rep(0,NTP)
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if (NLG[i]==GridIndic){
+          if(EXPT[i]>t|EXPT[i]==0){
+            Q81[i]=-1*as.numeric(FUNC1(NLG,EUC,alphaS,delta,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT)*AVG1(PST1,GridIndic))
+          }
+        }
+      }
+    }
+    Q80[t]=sum(Q81)
+  }
+    
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  Q82=rep(0,MTP)
+  for(t in 1:MTP){
+    Q83=rep(0,NTP)
+    for(i in 1:NTP){
+      for(GridIndic in 1:NTG){
+        if (NLG[i]==GridIndic){
+          if(EXPT[i]<=t & (EXPT[i]+INCPR[i])>t & EXPT[i]!=0){
+            
+            Q84=c()
+            for(L in 1:2){
+              Q84[L]=AVG2(NLG,PST1,EUC,alphaS,delta,lambda1,i,GridIndic,t,BetaCovInf,BetaCovSus,alphaT,L)
+            }
+            
+            Q83[i]=as.numeric(mean(Q84))
+          }
+        }
+      }
+    }
+    Q82[t]=sum(Q83)
+  }
+    
+  
+  
+  
+  LGTEMP=c()
+  for(L in 1:2){
+    LGTEMP[L]=dmvnorm(PST1[L,], rep(0,NTG), solve(sigma1^2*(as.numeric(lambda1)*D+(1-as.numeric(lambda1))*I)), log = T)
+  }
+    
+  
+   
+  return(mean(LGTEMP)+ (sum(Q82))+ (sum(Q80)))
+}
+
+
+
+
+
+
+
+
+
+   
+  
+ 
+ESTRES= ESTFN(NLG,EUC,alphaS0,delta0,lambda0,sigma0,BetaCovInf0,BetaCovSus0,alphaT0)
+alphaS=ESTRES$alphaS
+alphaS
+delta=ESTRES$delta
+delta
+lambda1=ESTRES$lambda1
+lambda1
+sigma1=ESTRES$sigma1
+sigma1
+BetaCovInf=ESTRES$BetaCovInf
+BetaCovInf
+BetaCovSus=ESTRES$BetaCovSus
+BetaCovSus
+alphaT=ESTRES$alphaT
+Uhat=ESTRES$Uhat
+PST1=ESTRES$PST
+
+
