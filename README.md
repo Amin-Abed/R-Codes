@@ -1,0 +1,1 @@
+Each scenario in the R code file should be executed at least 500 times, and the results should then be averaged across these 500 parameter estimates. Running the code just once may take several days, while performing at least 500 repetitions could require several weeks or even months, depending on the system configuration where R is being run.
